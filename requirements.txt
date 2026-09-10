@@ -1,0 +1,53 @@
+# Python: 3.11.x
+# ===============================
+
+# --- API / WebSocket ---
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+websockets==16.0
+pydantic==2.13.5
+httpx==0.28.1
+
+# --- Ingestion / OCR / Document Processing ---
+unstructured[all-docs]==0.27.5
+boto3==1.43.89
+temporalio==1.32.0
+
+# --- Retrieval / Vector Search ---
+qdrant-client==1.19.0
+sentence-transformers==6.0.1
+rank-bm25==0.2.2
+
+# --- RAG Evaluation ---
+ragas==0.4.3
+
+# --- LLM Serving / Routing ---
+litellm==1.100.0
+instructor==1.16.0
+
+# --- Agent / Workflow Orchestration ---
+langchain==1.4.0
+langchain-core==1.6.2
+langgraph==1.2.11
+
+# --- Caching / Storage ---
+redis==8.1.0
+redisvl==0.27.1
+pymongo==4.18.0
+psycopg2-binary==2.9.12
+sqlalchemy==2.0.43
+
+# --- Clustering / Topic Modeling ---
+bertopic==0.17.4
+umap-learn==0.5.12
+hdbscan==0.8.44
+
+# --- Observability ---
+langfuse==4.15.1
+opentelemetry-sdk==1.44.0
+opentelemetry-instrumentation-fastapi==0.65b0
+
+# --- Resilience / Logging ---
+tenacity==9.1.4
+pybreaker==1.2.0
+structlog==26.1.0

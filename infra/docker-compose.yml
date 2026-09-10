@@ -1,0 +1,97 @@
+version: "3.9"
+
+services:
+  # ---------- Vector / hybrid search ----------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ---------- Cache / semantic cache ----------
+  redis:
+    image: redis/redis-stack:latest   # includes RedisVL-compatible modules (search, json)
+    container_name: redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"   # RedisInsight UI
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # ---------- Metadata / chunk store ----------
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: assistant
+      POSTGRES_DB: assistant_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # ---------- Conversation history / similar-query cache ----------
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # ---------- Durable ingestion workflows ----------
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: temporal
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=assistant
+      - POSTGRES_PWD=assistant
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: temporal-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  # ---------- LLM tracing / evaluation ----------
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: langfuse
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://assistant:assistant@postgres:5432/assistant_db
+      - NEXTAUTH_SECRET=changeme
+      - SALT=changeme
+      - NEXTAUTH_URL=http://localhost:3001
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  redis_data:
+  postgres_data:
+  mongo_data:
