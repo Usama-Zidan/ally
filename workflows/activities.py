@@ -134,18 +134,7 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
     conn = psycopg2.connect(POSTGRES_DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_chunks (
-                    id SERIAL PRIMARY KEY,
-                    filename TEXT NOT NULL,
-                    page_number INT NOT NULL,
-                    chunk_index INT NOT NULL,
-                    text TEXT NOT NULL,
-                    UNIQUE (filename, page_number, chunk_index)
-                );
-                """
-            )
+            cur.execute("DELETE FROM document_chunks WHERE filename = %s;", (filename,))
             for idx, chunk in enumerate(chunks):
                 cur.execute(
                     """
@@ -160,3 +149,24 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
         return True
     finally:
         conn.close()
+
+
+@activity.defn
+async def embed_and_index(chunks: list[dict[str, Any]], filename: str) -> bool:
+    """Indexes the persisted chunks in Qdrant and BM25."""
+    from services.retrieval.bm25_index import rebuild_index_from_postgres
+    from services.retrieval.qdrant_store import Chunk, index_chunks, make_chunk_id
+
+    retrieval_chunks = [
+        Chunk(
+            id=make_chunk_id(filename, chunk["page_number"], index),
+            text=chunk["text"],
+            filename=filename,
+            page_number=chunk["page_number"],
+            chunk_index=index,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    index_chunks(retrieval_chunks)
+    rebuild_index_from_postgres()
+    return True

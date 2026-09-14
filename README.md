@@ -47,7 +47,7 @@ ally/
 
 - [x] Phase 0 — Infra bootstrap (this scaffold)
 - [x] Phase 1 — Ingestion & OCR pipeline (Temporal + Unstructured/Textract)
-- [ ] Phase 2 — Hybrid retrieval + Ragas eval
+- [x] Phase 2 — Hybrid retrieval + Ragas eval (implementation complete; corpus benchmark pending)
 - [ ] Phase 3 — LLM gateway + streaming chat with citations
 - [ ] Phase 4 — LangGraph agent layer (RAG vs. tool actions)
 - [ ] Phase 5 — Semantic + exact-match caching
@@ -71,10 +71,13 @@ docker compose up -d
 cd ..
 pip install -r requirements.txt
 
-# 4. Run the API
+# 4. Backfill Phase 2 indexes for existing Postgres chunks
+python services/retrieval/backfill_index.py
+
+# 5. Run the API
 uvicorn services.api.main:app --reload --port 8000
 
-# 5. Run the ingestion worker (separate terminal)
+# 6. Run the ingestion worker (separate terminal)
 python workflows/worker.py
 ```
 

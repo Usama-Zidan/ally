@@ -1,6 +1,19 @@
 {
     "configurations": [
         {
+            "name": "Debug FastAPI (Local)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "services.api.main:app",
+                "--port",
+                "8000"
+            ],
+            "jinja": true,
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Containers: Python - Fastapi",
             "type": "docker",
             "request": "launch",

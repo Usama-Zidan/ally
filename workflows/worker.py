@@ -35,6 +35,7 @@ async def main() -> None:
             activities.extract_with_textract,
             activities.chunk_pages,
             activities.persist_chunks,
+            activities.embed_and_index,
         ],
     )
 

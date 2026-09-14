@@ -1,6 +1,7 @@
 import unittest
 
 from config import (
+    EMBEDDING_MODEL,
     PROJECT_NAME,
     TEMPORAL_ADDRESS,
     UPLOAD_DIR,
@@ -9,6 +10,7 @@ from config import (
     QDRANT_URL,
     MONGO_URI,
     REDIS_URL,
+    QDRANT_COLLECTION,
 )
 
 
@@ -22,6 +24,9 @@ class ConfigContractTest(unittest.TestCase):
         self.assertIsInstance(QDRANT_URL, str)
         self.assertIsInstance(MONGO_URI, str)
         self.assertIsInstance(REDIS_URL, str)
+        self.assertTrue(POSTGRES_DSN.startswith(("postgres://", "postgresql://")))
+        self.assertIsInstance(QDRANT_COLLECTION, str)
+        self.assertIsInstance(EMBEDDING_MODEL, str)
 
 
 if __name__ == "__main__":
