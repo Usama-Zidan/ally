@@ -24,6 +24,11 @@ with workflow.unsafe.imports_passed_through():
 class IngestDocumentWorkflow:
     @workflow.run
     async def run(self, file_path: str, filename: str) -> dict:
+        """Extract, chunk, persist, and index a document through retried activities.
+
+        Returns a summary containing the filename, chunk count, and persistence
+        and indexing results.
+        """
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -68,6 +73,16 @@ class IngestDocumentWorkflow:
             retry_policy=retry_policy,
         )
 
-        # Phase 2 will add an activity here: embed_and_index(chunks)
+        indexed = await workflow.execute_activity(
+            activities.embed_and_index,
+            args=[chunks, filename],
+            start_to_close_timeout=timedelta(minutes=10),
+            retry_policy=retry_policy,
+        )
 
-        return {"filename": filename, "num_chunks": len(chunks), "stored": stored}
+        return {
+            "filename": filename,
+            "num_chunks": len(chunks),
+            "stored": stored,
+            "indexed": indexed,
+        }

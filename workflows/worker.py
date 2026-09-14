@@ -23,6 +23,7 @@ from workflows.ingestion_workflow import IngestDocumentWorkflow
 
 
 async def main() -> None:
+    """Connect to Temporal and run the ingestion worker until it is stopped."""
     client = await Client.connect(TEMPORAL_ADDRESS)
 
     worker = Worker(
@@ -35,6 +36,7 @@ async def main() -> None:
             activities.extract_with_textract,
             activities.chunk_pages,
             activities.persist_chunks,
+            activities.embed_and_index,
         ],
     )
 

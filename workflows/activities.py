@@ -127,25 +127,17 @@ async def chunk_pages(pages: list[dict[str, Any]], max_chars: int = 1500) -> lis
 
 @activity.defn
 async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Upserts chunk rows into Postgres, keyed by (filename, page_number,
-    chunk_index) so retries don't create duplicates."""
+    """Replace all PostgreSQL chunk rows for ``filename`` in one transaction.
+
+    Each chunk's input position is stored as its ``chunk_index``. Returns
+    ``True`` after the replacement is committed.
+    """
     import psycopg2
 
     conn = psycopg2.connect(POSTGRES_DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_chunks (
-                    id SERIAL PRIMARY KEY,
-                    filename TEXT NOT NULL,
-                    page_number INT NOT NULL,
-                    chunk_index INT NOT NULL,
-                    text TEXT NOT NULL,
-                    UNIQUE (filename, page_number, chunk_index)
-                );
-                """
-            )
+            cur.execute("DELETE FROM document_chunks WHERE filename = %s;", (filename,))
             for idx, chunk in enumerate(chunks):
                 cur.execute(
                     """
@@ -160,3 +152,24 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
         return True
     finally:
         conn.close()
+
+
+@activity.defn
+async def embed_and_index(chunks: list[dict[str, Any]], filename: str) -> bool:
+    """Upsert ``chunks`` into Qdrant, then rebuild BM25 from PostgreSQL."""
+    from services.retrieval.bm25_index import rebuild_index_from_postgres
+    from services.retrieval.qdrant_store import Chunk, index_chunks, make_chunk_id
+
+    retrieval_chunks = [
+        Chunk(
+            id=make_chunk_id(filename, chunk["page_number"], index),
+            text=chunk["text"],
+            filename=filename,
+            page_number=chunk["page_number"],
+            chunk_index=index,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    index_chunks(retrieval_chunks)
+    rebuild_index_from_postgres()
+    return True
