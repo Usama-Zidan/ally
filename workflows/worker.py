@@ -23,6 +23,7 @@ from workflows.ingestion_workflow import IngestDocumentWorkflow
 
 
 async def main() -> None:
+    """Connect to Temporal and run the ingestion workflow worker."""
     client = await Client.connect(TEMPORAL_ADDRESS)
 
     worker = Worker(

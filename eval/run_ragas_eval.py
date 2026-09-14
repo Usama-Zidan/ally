@@ -60,6 +60,11 @@ def chunk_keys(result: dict) -> set[str]:
 
 
 def recall_at_k(retrieved: list[dict], relevant_chunks: list[str], k: int) -> float:
+    """Return the fraction of relevant chunk labels found in the first ``k`` results.
+
+    An empty relevance set scores zero. Labels may be chunk IDs or the page-level
+    labels produced by :func:`chunk_keys`.
+    """
     top_k_keys = set().union(*(chunk_keys(r) for r in retrieved[:k]))
     relevant_set = set(relevant_chunks)
     if not relevant_set:
@@ -71,6 +76,7 @@ def recall_at_k(retrieved: list[dict], relevant_chunks: list[str], k: int) -> fl
 def run_recall_comparison(
     eval_queries: list[dict], k: int = 5
 ) -> tuple[dict[str, float], list[dict]]:
+    """Evaluate each pipeline configuration and return aggregate and per-query recall."""
     results: dict[str, list[float]] = {name: [] for name in PIPELINE_CONFIGS}
     per_query: list[dict] = []
 
@@ -100,9 +106,10 @@ def run_recall_comparison(
 
 
 def run_ragas_metrics(eval_queries: list[dict], k: int = 5) -> object | None:
-    """Runs Ragas's LLM-judged metrics using the hybrid_reranked config's
-    retrieved contexts. Requires OPENAI_API_KEY (or another provider Ragas
-    supports) to be set — returns None and logs a warning otherwise."""
+    """Evaluate Ragas context metrics for the hybrid-reranked retrieval results.
+
+    Returns ``None`` and logs a warning when ``OPENAI_API_KEY`` is not set.
+    """
     if not os.getenv("OPENAI_API_KEY"):
         log.warning("ragas_skipped", reason="no LLM API key configured")
         return None
@@ -128,6 +135,7 @@ def run_ragas_metrics(eval_queries: list[dict], k: int = 5) -> object | None:
 
 
 def main() -> None:
+    """Run retrieval evaluations and write the recall results as JSON."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-set", type=str, default="eval/eval_set.json")
     parser.add_argument("--k", type=int, default=5)

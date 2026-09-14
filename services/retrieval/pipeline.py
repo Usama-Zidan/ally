@@ -28,6 +28,7 @@ _bm25_index_cache: BM25Index | None = None
 
 
 def _get_bm25_index() -> BM25Index:
+    """Return the cached BM25 index, reloading it when the persisted file changes."""
     global _bm25_index_cache
     index_mtime = INDEX_PATH.stat().st_mtime_ns if INDEX_PATH.exists() else None
     cached_mtime = _bm25_index_cache.source_mtime_ns if _bm25_index_cache else None
@@ -53,7 +54,16 @@ def retrieve(
 ) -> list[dict]:
     """Main retrieval entrypoint. Flags let eval scripts isolate the
     contribution of each stage (e.g. use_bm25=False, use_rerank=False
-    reduces this to plain vector search for a baseline comparison)."""
+    reduces this to plain vector search for a baseline comparison).
+
+    Individual optional stages fall back to the preceding available results when
+    they fail. ``metadata_filter`` applies equality constraints during dense and
+    lexical retrieval.
+
+    Raises:
+        ValueError: If the query is empty, ``top_k`` is not positive, or the
+            candidate pool is smaller than ``top_k``.
+    """
     if not query.strip():
         raise ValueError("query must not be empty")
     if top_k <= 0:

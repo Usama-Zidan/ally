@@ -17,9 +17,15 @@ def mmr_select(
     top_k: int = 5,
     lambda_param: float = 0.7,
 ) -> list[dict]:
-    """lambda_param closer to 1.0 favors relevance, closer to 0.0 favors
-    diversity. 0.7 is a reasonable default for RAG context selection where
-    relevance should still dominate."""
+    """Select candidates by balancing query relevance against result diversity.
+
+    ``lambda_param`` weights relevance from zero (diversity only) to one
+    (relevance only).
+
+    Raises:
+        ValueError: If ``top_k`` is negative, ``lambda_param`` is outside
+            ``[0, 1]``, or query and candidate embedding dimensions differ.
+    """
     if top_k < 0:
         raise ValueError("top_k cannot be negative")
     if not 0.0 <= lambda_param <= 1.0:
