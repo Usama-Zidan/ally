@@ -32,57 +32,70 @@ class ConfigContractTest(unittest.TestCase):
         self.assertIsInstance(QDRANT_COLLECTION, str)
         self.assertIsInstance(EMBEDDING_MODEL, str)
 
-    def test_load_settings_uses_environment_overrides(self):
-        environment = {
-            "PROJECT_NAME": "Test Ally",
-            "TEMPORAL_ADDRESS": "temporal.example:7233",
-            "UPLOAD_DIR": "/tmp/custom-uploads",
-            "POSTGRES_DSN": "postgres://user:pass@db/test",
-            "BM25_INDEX_PATH": "/tmp/custom-bm25.pkl",
-            "QDRANT_URL": "https://qdrant.example",
-            "QDRANT_COLLECTION": "test_chunks",
-            "EMBEDDING_MODEL": "test/model",
-        }
-        with patch.dict(config.os.environ, environment, clear=True):
-            loaded = config._load_settings()
+    def test_settings_accept_valid_supported_urls(self):
+        settings = self._settings(
+            postgres_dsn="postgres://user:pass@db/name",
+            qdrant_url="https://qdrant.example.test",
+        )
 
-        self.assertEqual(loaded.project_name, "Test Ally")
-        self.assertEqual(loaded.temporal_address, "temporal.example:7233")
-        self.assertEqual(loaded.upload_dir, Path("/tmp/custom-uploads"))
-        self.assertEqual(loaded.bm25_index_path, Path("/tmp/custom-bm25.pkl"))
-        self.assertEqual(loaded.qdrant_url, "https://qdrant.example")
-        self.assertEqual(loaded.qdrant_collection, "test_chunks")
-        self.assertEqual(loaded.embedding_model, "test/model")
+        self.assertIsNone(settings.validate())
 
-    def test_settings_reject_invalid_required_values(self):
-        valid = {
-            "project_name": "Ally",
-            "temporal_address": "localhost:7233",
-            "upload_dir": Path("/tmp/uploads"),
-            "aws_region": "us-east-1",
-            "postgres_dsn": "postgresql://localhost/ally",
-            "bm25_index_path": Path("/tmp/bm25.pkl"),
-            "qdrant_url": "http://localhost:6333",
-            "qdrant_api_key": "",
-            "qdrant_collection": "chunks",
-            "embedding_model": "test/model",
-            "mongo_uri": "mongodb://localhost:27017",
-            "redis_url": "redis://localhost:6379",
-        }
-        invalid_cases = {
-            "project_name": " ",
+    def test_settings_reject_each_required_invalid_value(self):
+        invalid_values = {
+            "project_name": "  ",
             "temporal_address": "",
-            "postgres_dsn": "mysql://localhost/ally",
-            "qdrant_url": "grpc://localhost:6333",
+            "postgres_dsn": "mysql://localhost/db",
+            "qdrant_url": "ftp://localhost",
             "qdrant_collection": " ",
             "embedding_model": "",
         }
 
-        for field, value in invalid_cases.items():
-            with self.subTest(field=field):
-                candidate = Settings(**{**valid, field: value})
-                with self.assertRaises(ValueError):
-                    candidate.validate()
+        for field, value in invalid_values.items():
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self._settings(**{field: value}).validate()
+
+    def test_load_settings_reads_retrieval_environment_overrides(self):
+        overrides = {
+            "PROJECT_NAME": "Test Ally",
+            "TEMPORAL_ADDRESS": "temporal.test:7233",
+            "UPLOAD_DIR": "/tmp/test-uploads",
+            "POSTGRES_DSN": "postgresql://user:pass@db/test",
+            "BM25_INDEX_PATH": "/tmp/test-index.pkl",
+            "QDRANT_URL": "https://qdrant.test",
+            "QDRANT_API_KEY": "local-key",
+            "QDRANT_COLLECTION": "test_chunks",
+            "EMBEDDING_MODEL": "test-embedding",
+        }
+        with patch.dict(config.os.environ, overrides, clear=True):
+            loaded = config._load_settings()
+
+        self.assertEqual(loaded.project_name, "Test Ally")
+        self.assertEqual(loaded.temporal_address, "temporal.test:7233")
+        self.assertEqual(loaded.upload_dir, Path("/tmp/test-uploads"))
+        self.assertEqual(loaded.bm25_index_path, Path("/tmp/test-index.pkl"))
+        self.assertEqual(loaded.qdrant_url, "https://qdrant.test")
+        self.assertEqual(loaded.qdrant_api_key, "local-key")
+        self.assertEqual(loaded.qdrant_collection, "test_chunks")
+        self.assertEqual(loaded.embedding_model, "test-embedding")
+
+    @staticmethod
+    def _settings(**overrides):
+        values = {
+            "project_name": "Ally",
+            "temporal_address": "localhost:7233",
+            "upload_dir": Path("/tmp/uploads"),
+            "aws_region": "us-east-1",
+            "postgres_dsn": "postgresql://user:pass@localhost/db",
+            "bm25_index_path": Path("/tmp/index.pkl"),
+            "qdrant_url": "http://localhost:6333",
+            "qdrant_api_key": "",
+            "qdrant_collection": "chunks",
+            "embedding_model": "embedding-model",
+            "mongo_uri": "mongodb://localhost:27017",
+            "redis_url": "redis://localhost:6379",
+        }
+        values.update(overrides)
+        return Settings(**values)
 
 
 if __name__ == "__main__":
