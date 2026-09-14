@@ -18,7 +18,7 @@ DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 @lru_cache(maxsize=1)
 def _get_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> CrossEncoder:
-    """Load and cache the configured cross-encoder model."""
+    """Return a cached cross-encoder for ``model_name``."""
     from sentence_transformers import CrossEncoder
 
     return CrossEncoder(model_name)
@@ -30,12 +30,10 @@ def rerank(
     top_k: int = 8,
     model_name: str = DEFAULT_RERANKER_MODEL,
 ) -> list[dict]:
-    """candidates: fused results from fusion.reciprocal_rank_fusion, each
-    with a "text" field. Returns the top_k candidates re-sorted by
-    cross-encoder relevance score.
+    """Score and return the most relevant candidates according to a cross-encoder.
 
-    The input dictionaries receive a ``rerank_score`` and the candidate list is
-    sorted in place before the top results are returned.
+    The input candidates are mutated by adding ``rerank_score`` and sorting
+    them in descending score order.
     """
     if not candidates:
         return []

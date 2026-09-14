@@ -127,7 +127,11 @@ async def chunk_pages(pages: list[dict[str, Any]], max_chars: int = 1500) -> lis
 
 @activity.defn
 async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Replace a document's Postgres chunk rows with the supplied chunks."""
+    """Replace all PostgreSQL chunk rows for ``filename`` in one transaction.
+
+    Each chunk's input position is stored as its ``chunk_index``. Returns
+    ``True`` after the replacement is committed.
+    """
     import psycopg2
 
     conn = psycopg2.connect(POSTGRES_DSN)
@@ -152,7 +156,7 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
 
 @activity.defn
 async def embed_and_index(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Indexes the persisted chunks in Qdrant and BM25."""
+    """Upsert ``chunks`` into Qdrant, then rebuild BM25 from PostgreSQL."""
     from services.retrieval.bm25_index import rebuild_index_from_postgres
     from services.retrieval.qdrant_store import Chunk, index_chunks, make_chunk_id
 

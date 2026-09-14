@@ -23,12 +23,7 @@ class Settings:
     redis_url: str
 
     def validate(self) -> None:
-        """Validate required names and supported service URL schemes.
-
-        Raises:
-            ValueError: If a required name is empty or a service URL uses an
-                unsupported scheme.
-        """
+        """Reject empty required settings and unsupported service URL schemes."""
         if not self.project_name.strip():
             raise ValueError("PROJECT_NAME must not be empty")
         if not self.temporal_address.strip():
@@ -44,7 +39,7 @@ class Settings:
 
 
 def _load_settings() -> Settings:
-    """Load settings from the environment, apply defaults, and validate them."""
+    """Load application settings from the environment and validate them."""
     settings = Settings(
         project_name=os.getenv("PROJECT_NAME", "Ally"),
         temporal_address=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
