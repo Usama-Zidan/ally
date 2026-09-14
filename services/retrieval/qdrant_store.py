@@ -41,7 +41,7 @@ class Chunk:
 
 
 def get_client() -> QdrantClient:
-    """Create a Qdrant client with the configured URL and optional API key."""
+    """Create a Qdrant client, including an API key when one is configured."""
     url = QDRANT_URL
     api_key = os.getenv("QDRANT_API_KEY", QDRANT_API_KEY)
     if api_key:
@@ -50,10 +50,10 @@ def get_client() -> QdrantClient:
 
 
 def ensure_collection(client: QdrantClient | None = None) -> None:
-    """Create the configured collection or validate its vector dimension.
+    """Create the vector collection or verify that its vector size matches.
 
     Raises:
-        RuntimeError: If an existing collection has a different vector size.
+        RuntimeError: If the existing collection has an unexpected vector size.
     """
     client = client or get_client()
     existing = [c.name for c in client.get_collections().collections]
@@ -74,12 +74,12 @@ def ensure_collection(client: QdrantClient | None = None) -> None:
 
 
 def index_chunks(chunks: list[Chunk], client: QdrantClient | None = None) -> None:
-    """Embed and upsert chunks into the configured Qdrant collection.
-
-    Empty batches are ignored.
+    """Embeds and upserts a batch of chunks. Called after Phase 1's
+    persist_chunks activity, or via a standalone backfill script for
+    already-ingested documents. An empty batch performs no Qdrant request.
 
     Raises:
-        RuntimeError: If the embedding count or vector dimension is invalid.
+        RuntimeError: If the embedding count or vector dimensions are unexpected.
     """
     client = client or get_client()
     if not chunks:
@@ -116,13 +116,13 @@ def dense_search(
     metadata_filter: dict | None = None,
     client: QdrantClient | None = None,
 ) -> list[dict]:
-    """Return dense-vector matches using optional exact metadata filters.
+    """Return dense-vector matches, optionally filtered by metadata equality.
 
-    Embedding, Qdrant, or response-processing failures produce an empty list
-    so callers can continue with lexical retrieval.
+    Retrieval failures are logged and returned as an empty list so callers can
+    continue with lexical results.
 
     Raises:
-        ValueError: If ``query`` is empty or ``top_k`` is not positive.
+        ValueError: If the query is empty or ``top_k`` is not positive.
     """
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")

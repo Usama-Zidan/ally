@@ -127,11 +127,7 @@ async def chunk_pages(pages: list[dict[str, Any]], max_chars: int = 1500) -> lis
 
 @activity.defn
 async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Replace all PostgreSQL chunk rows for ``filename`` in one transaction.
-
-    Each chunk's input position is stored as its ``chunk_index``. Returns
-    ``True`` after the replacement is committed.
-    """
+    """Replace a document's Postgres chunk rows with the supplied chunks."""
     import psycopg2
 
     conn = psycopg2.connect(POSTGRES_DSN)

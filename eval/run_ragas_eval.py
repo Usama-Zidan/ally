@@ -60,7 +60,11 @@ def chunk_keys(result: dict) -> set[str]:
 
 
 def recall_at_k(retrieved: list[dict], relevant_chunks: list[str], k: int) -> float:
-    """Return the fraction of relevant chunk or page labels found in the first ``k`` results."""
+    """Return the fraction of relevant chunk labels found in the first ``k`` results.
+
+    An empty relevance set scores zero. Labels may be chunk IDs or the page-level
+    labels produced by :func:`chunk_keys`.
+    """
     top_k_keys = set().union(*(chunk_keys(r) for r in retrieved[:k]))
     relevant_set = set(relevant_chunks)
     if not relevant_set:
@@ -102,9 +106,9 @@ def run_recall_comparison(
 
 
 def run_ragas_metrics(eval_queries: list[dict], k: int = 5) -> object | None:
-    """Evaluate hybrid-reranked contexts with Ragas when ``OPENAI_API_KEY`` is set.
+    """Evaluate Ragas context metrics for the hybrid-reranked retrieval results.
 
-    Returns ``None`` without running retrieval when the key is absent.
+    Returns ``None`` and logs a warning when ``OPENAI_API_KEY`` is not set.
     """
     if not os.getenv("OPENAI_API_KEY"):
         log.warning("ragas_skipped", reason="no LLM API key configured")
@@ -131,11 +135,7 @@ def run_ragas_metrics(eval_queries: list[dict], k: int = 5) -> object | None:
 
 
 def main() -> None:
-    """Run retrieval evaluation and write the recall comparison as JSON.
-
-    Raises:
-        FileNotFoundError: If the requested evaluation set does not exist.
-    """
+    """Run retrieval evaluations and write the recall results as JSON."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-set", type=str, default="eval/eval_set.json")
     parser.add_argument("--k", type=int, default=5)
