@@ -23,6 +23,7 @@ log = structlog.get_logger()
 
 
 def load_chunks_from_postgres() -> list[Chunk]:
+    """Load ordered PostgreSQL chunk rows with deterministic retrieval IDs."""
     conn = psycopg2.connect(POSTGRES_DSN)
     try:
         with conn.cursor() as cur:
@@ -47,6 +48,7 @@ def load_chunks_from_postgres() -> list[Chunk]:
 
 
 def main() -> None:
+    """Backfill Qdrant and rebuild BM25 from the current PostgreSQL chunks."""
     chunks = load_chunks_from_postgres()
     log.info("chunks_loaded_from_postgres", count=len(chunks))
     index_chunks(chunks)

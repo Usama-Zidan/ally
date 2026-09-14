@@ -20,6 +20,7 @@ EMBEDDING_DIMENSION = 768
 
 @lru_cache(maxsize=1)
 def _get_model(model_name: str = DEFAULT_MODEL_NAME) -> SentenceTransformer:
+    """Return a cached sentence-transformer model for ``model_name``."""
     from sentence_transformers import SentenceTransformer
 
     return SentenceTransformer(model_name)
