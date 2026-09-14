@@ -152,7 +152,7 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
 
 @activity.defn
 async def embed_and_index(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Indexes the persisted chunks in Qdrant and BM25."""
+    """Upsert ``chunks`` into Qdrant, then rebuild BM25 from PostgreSQL."""
     from services.retrieval.bm25_index import rebuild_index_from_postgres
     from services.retrieval.qdrant_store import Chunk, index_chunks, make_chunk_id
 
