@@ -18,7 +18,11 @@ def reciprocal_rank_fusion(
 ) -> list[dict]:
     """ranked_lists: e.g. [dense_results, bm25_results], each already
     sorted best-first. Returns a fused, deduplicated, re-sorted list where
-    each item keeps its original payload plus an added "rrf_score"."""
+    each item keeps its original payload plus an added "rrf_score".
+
+    Raises:
+        ValueError: If ``k`` is not positive or an item lacks ``id_key``.
+    """
     if k <= 0:
         raise ValueError("k must be greater than zero")
 
