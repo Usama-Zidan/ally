@@ -68,11 +68,7 @@ async def health() -> dict:
 
 @app.get("/health/dependencies")
 async def health_dependencies() -> JSONResponse:
-    """Lightweight check that downstream infra is reachable.
-
-    Returns a clean degraded status if Temporal is not running instead of
-    crashing the whole process during FastAPI app startup or tests.
-    """
+    """Report whether the configured Temporal service is reachable."""
     checks = {"temporal": "unavailable"}
     if app.state.temporal_client is None:
         return JSONResponse(checks)
@@ -89,11 +85,11 @@ async def health_dependencies() -> JSONResponse:
 
 @app.post("/documents/upload")
 async def upload_document(file: UploadFile = File(...)) -> dict:
-    """Accepts a document, stores it, and starts the ingestion workflow
-    when the Temporal client is reachable.
+    """Store an uploaded document and enqueue its ingestion workflow.
 
-    In offline or test contexts, the request degrades cleanly with a 503
-    instead of crashing the FastAPI app during startup or import.
+    Returns identifiers for the document and queued workflow. Raises an HTTP
+    400 response when the upload cannot be stored, or HTTP 503 when Temporal
+    is unavailable or cannot start the workflow.
     """
     if app.state.temporal_client is None:
         raise HTTPException(

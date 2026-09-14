@@ -127,8 +127,7 @@ async def chunk_pages(pages: list[dict[str, Any]], max_chars: int = 1500) -> lis
 
 @activity.defn
 async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Upserts chunk rows into Postgres, keyed by (filename, page_number,
-    chunk_index) so retries don't create duplicates."""
+    """Replace a document's Postgres chunk rows with the supplied chunks."""
     import psycopg2
 
     conn = psycopg2.connect(POSTGRES_DSN)
