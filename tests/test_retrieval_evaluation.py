@@ -36,6 +36,7 @@ class RecallEvaluationTest(unittest.TestCase):
         ]
 
         def retrieve(query, top_k, **configuration):
+            del top_k
             result_id = f"{query}-id" if configuration["use_bm25"] else "miss"
             return [{"id": result_id, "filename": "a.pdf", "page_number": 1}]
 
@@ -72,12 +73,12 @@ class RagasEvaluationTest(unittest.TestCase):
         context_recall = object()
 
         datasets_module = types.ModuleType("datasets")
-        datasets_module.Dataset = dataset_type
         ragas_module = types.ModuleType("ragas")
-        ragas_module.evaluate = evaluate
         metrics_module = types.ModuleType("ragas.metrics")
-        metrics_module.context_precision = context_precision
-        metrics_module.context_recall = context_recall
+        setattr(datasets_module, "Dataset", dataset_type)
+        setattr(ragas_module, "evaluate", evaluate)
+        setattr(metrics_module, "context_precision", context_precision)
+        setattr(metrics_module, "context_recall", context_recall)
 
         entry = {
             "query": "What is the leave policy?",
