@@ -41,6 +41,7 @@ class Chunk:
 
 
 def get_client() -> QdrantClient:
+    """Create a Qdrant client with the configured URL and optional API key."""
     url = QDRANT_URL
     api_key = os.getenv("QDRANT_API_KEY", QDRANT_API_KEY)
     if api_key:
@@ -49,6 +50,11 @@ def get_client() -> QdrantClient:
 
 
 def ensure_collection(client: QdrantClient | None = None) -> None:
+    """Create the configured collection or validate its vector dimension.
+
+    Raises:
+        RuntimeError: If an existing collection has a different vector size.
+    """
     client = client or get_client()
     existing = [c.name for c in client.get_collections().collections]
     if COLLECTION_NAME in existing:
@@ -68,9 +74,13 @@ def ensure_collection(client: QdrantClient | None = None) -> None:
 
 
 def index_chunks(chunks: list[Chunk], client: QdrantClient | None = None) -> None:
-    """Embeds and upserts a batch of chunks. Called after Phase 1's
-    persist_chunks activity, or via a standalone backfill script for
-    already-ingested documents."""
+    """Embed and upsert chunks into the configured Qdrant collection.
+
+    Empty batches are ignored.
+
+    Raises:
+        RuntimeError: If the embedding count or vector dimension is invalid.
+    """
     client = client or get_client()
     if not chunks:
         return
@@ -106,12 +116,13 @@ def dense_search(
     metadata_filter: dict | None = None,
     client: QdrantClient | None = None,
 ) -> list[dict]:
-    """Returns top_k dense-vector matches. metadata_filter supports simple
-    equality filters, e.g. {"filename": "policy.pdf"}, translated to a
-    Qdrant Filter — useful for scoping search to a single doc or doc set.
+    """Return dense-vector matches using optional exact metadata filters.
 
-    If the Qdrant service is unreachable, this function degrades cleanly to
-    an empty list so the caller can continue with the lexical BM25 path.
+    Embedding, Qdrant, or response-processing failures produce an empty list
+    so callers can continue with lexical retrieval.
+
+    Raises:
+        ValueError: If ``query`` is empty or ``top_k`` is not positive.
     """
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")

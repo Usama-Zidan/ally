@@ -17,6 +17,7 @@ _TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
 
 
 def _tokenize(text: str) -> list[str]:
+    """Return lowercase alphanumeric tokens from ``text``."""
     return _TOKEN_RE.findall(text.lower())
 
 
@@ -28,6 +29,7 @@ class BM25Index:
     source_mtime_ns: int | None = field(default=None, init=False, repr=False)
 
     def build(self, docs: list[dict]) -> None:
+        """Replace this index's corpus with ``docs``."""
         self.doc_ids = [doc["id"] for doc in docs]
         self.doc_metadata = docs
         if not docs:
@@ -41,6 +43,13 @@ class BM25Index:
         top_k: int = 20,
         metadata_filter: dict | None = None,
     ) -> list[dict]:
+        """Return lexical matches, applying exact metadata filters before limiting.
+
+        Each returned document includes its BM25 ``score``.
+
+        Raises:
+            ValueError: If ``top_k`` is not positive.
+        """
         if top_k <= 0:
             raise ValueError("top_k must be greater than zero")
         if not query.strip() or self.bm25 is None:
@@ -67,6 +76,7 @@ class BM25Index:
         ]
 
     def save(self, path: Path = INDEX_PATH) -> None:
+        """Atomically serialize this index to ``path``, creating its parent directory."""
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = path.with_suffix(f"{path.suffix}.tmp")
         with temporary_path.open("wb") as file:
@@ -77,12 +87,13 @@ class BM25Index:
 
     @staticmethod
     def load(path: Path = INDEX_PATH) -> "BM25Index":
+        """Load and return a serialized index from ``path``."""
         with path.open("rb") as file:
             return pickle.load(file)
 
 
 def rebuild_index_from_postgres() -> BM25Index:
-    """Rebuilds BM25 from the authoritative Phase 1 Postgres chunk table."""
+    """Build and persist a BM25 index from the PostgreSQL chunk table."""
     from services.retrieval.qdrant_store import make_chunk_id
 
     conn = psycopg2.connect(os.getenv("POSTGRES_DSN", POSTGRES_DSN))

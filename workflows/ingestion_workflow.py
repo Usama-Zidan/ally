@@ -24,6 +24,11 @@ with workflow.unsafe.imports_passed_through():
 class IngestDocumentWorkflow:
     @workflow.run
     async def run(self, file_path: str, filename: str) -> dict:
+        """Extract, chunk, persist, and index a document through retried activities.
+
+        Returns a summary containing the filename, chunk count, and persistence
+        and indexing results.
+        """
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,

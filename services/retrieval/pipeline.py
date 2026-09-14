@@ -28,6 +28,11 @@ _bm25_index_cache: BM25Index | None = None
 
 
 def _get_bm25_index() -> BM25Index:
+    """Return the cached BM25 index, reloading it when the index file changes.
+
+    Raises:
+        RuntimeError: If the index file does not exist.
+    """
     global _bm25_index_cache
     index_mtime = INDEX_PATH.stat().st_mtime_ns if INDEX_PATH.exists() else None
     cached_mtime = _bm25_index_cache.source_mtime_ns if _bm25_index_cache else None
@@ -51,9 +56,17 @@ def retrieve(
     use_mmr: bool = True,
     metadata_filter: dict | None = None,
 ) -> list[dict]:
-    """Main retrieval entrypoint. Flags let eval scripts isolate the
-    contribution of each stage (e.g. use_bm25=False, use_rerank=False
-    reduces this to plain vector search for a baseline comparison)."""
+    """Return ranked chunks from the enabled dense, lexical, reranking, and MMR stages.
+
+    ``candidate_pool_size`` limits intermediate candidates, while ``top_k``
+    limits the final result. Exact ``metadata_filter`` matches are passed to
+    dense and lexical search. Unavailable optional stages fall back to the
+    preceding stage.
+
+    Raises:
+        ValueError: If the query is empty, limits are nonpositive, or the
+            candidate pool is smaller than ``top_k``.
+    """
     if not query.strip():
         raise ValueError("query must not be empty")
     if top_k <= 0:
