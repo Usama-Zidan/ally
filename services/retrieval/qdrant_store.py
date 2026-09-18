@@ -73,10 +73,36 @@ def ensure_collection(client: QdrantClient | None = None) -> None:
     )
 
 
+def delete_by_filename(filename: str, client: QdrantClient | None = None) -> None:
+    """Deletes every point belonging to ``filename`` from the collection.
+
+    Must be called before re-indexing a document that has already been
+    ingested once. Without this, re-ingesting a document that now produces
+    fewer chunks leaves the old, higher-index points behind in Qdrant —
+    they stay retrievable and citable even though the corresponding text
+    no longer exists in Postgres or the source document.
+    """
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    client = client or get_client()
+    existing = [c.name for c in client.get_collections().collections]
+    if COLLECTION_NAME not in existing:
+        return  # nothing to delete yet
+
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=Filter(
+            must=[FieldCondition(key="filename", match=MatchValue(value=filename))]
+        ),
+    )
+
+
 def index_chunks(chunks: list[Chunk], client: QdrantClient | None = None) -> None:
     """Embed and upsert chunks into the configured Qdrant collection.
 
-    Empty batches are ignored.
+    Empty batches are ignored. Does NOT delete stale points from a prior
+    version of the same document — call delete_by_filename() first when
+    re-indexing (see embed_and_index in workflows/activities.py).
 
     Raises:
         RuntimeError: If the embedding count or vector dimension is invalid.
@@ -118,44 +144,46 @@ def dense_search(
 ) -> list[dict]:
     """Return dense-vector matches using optional exact metadata filters.
 
-    Embedding, Qdrant, or response-processing failures produce an empty list
-    so callers can continue with lexical retrieval.
+    Qdrant and embedding errors are intentionally propagated so callers can
+    distinguish search failures from valid empty results and explicitly
+    implement fallback behavior.
 
     Raises:
-        ValueError: If ``query`` is empty or ``top_k`` is not positive.
+        ValueError: If query is empty or top_k is not positive.
+        RuntimeError: If a Qdrant point has an invalid or incomplete payload.
     """
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
     if not query.strip():
         raise ValueError("query must not be empty")
 
-    try:
-        client = client or get_client()
-        query_vector = embed_query(query)
+    client = client or get_client()
+    query_vector = embed_query(query)
 
-        qdrant_filter = None
-        if metadata_filter:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
+    qdrant_filter = None
+    if metadata_filter:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-            qdrant_filter = Filter(
-                must=[
-                    FieldCondition(key=key, match=MatchValue(value=value))
-                    for key, value in metadata_filter.items()
-                ]
-            )
-
-        response = client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=query_vector,
-            query_filter=qdrant_filter,
-            limit=top_k,
+        qdrant_filter = Filter(
+            must=[
+                FieldCondition(key=key, match=MatchValue(value=value))
+                for key, value in metadata_filter.items()
+            ]
         )
 
-        results: list[dict] = []
-        for point in response.points:
-            payload = point.payload
-            if not isinstance(payload, dict):
-                raise RuntimeError(f"Qdrant point {point.id} has no payload")
+    response = client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=query_vector,
+        query_filter=qdrant_filter,
+        limit=top_k,
+    )
+
+    results: list[dict] = []
+    for point in response.points:
+        payload = point.payload
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Qdrant point {point.id} has no payload")
+        try:
             results.append(
                 {
                     "id": point.id,
@@ -166,10 +194,11 @@ def dense_search(
                     "score": point.score,
                 }
             )
-        return results
-    except Exception as exc:  # noqa: BLE001
-        log.warning("qdrant_dense_search_unavailable", error=str(exc))
-        return []
+        except KeyError as exc:
+            raise RuntimeError(
+                f"Qdrant point {point.id} is missing required field: {exc}"
+            ) from exc
+    return results
 
 
 def make_chunk_id(filename: str, page_number: int, chunk_index: int) -> str:

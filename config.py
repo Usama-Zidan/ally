@@ -21,6 +21,7 @@ class Settings:
     embedding_model: str
     mongo_uri: str
     redis_url: str
+    textract_s3_bucket: str = ""
 
     def validate(self) -> None:
         """Reject empty required settings and unsupported service URL schemes."""
@@ -45,6 +46,7 @@ def _load_settings() -> Settings:
         temporal_address=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
         upload_dir=Path(os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "ally_uploads"))),
         aws_region=os.getenv("AWS_REGION", "us-east-1"),
+        textract_s3_bucket=os.getenv("TEXTRACT_S3_BUCKET", ""),
         postgres_dsn=os.getenv(
             "POSTGRES_DSN",
             "postgresql://assistant:assistant@localhost:5432/assistant_db",
@@ -69,6 +71,7 @@ PROJECT_NAME = settings.project_name
 TEMPORAL_ADDRESS = settings.temporal_address
 UPLOAD_DIR = str(settings.upload_dir)
 AWS_REGION = settings.aws_region
+TEXTRACT_S3_BUCKET = settings.textract_s3_bucket
 POSTGRES_DSN = settings.postgres_dsn
 BM25_INDEX_PATH = str(settings.bm25_index_path)
 QDRANT_URL = settings.qdrant_url

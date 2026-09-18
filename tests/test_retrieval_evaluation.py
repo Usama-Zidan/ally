@@ -11,6 +11,19 @@ from eval import run_ragas_eval as evaluation
 
 
 class RecallEvaluationTest(unittest.TestCase):
+    def test_pipeline_configs_isolate_one_variable_per_step(self):
+        self.assertEqual(
+            evaluation.PIPELINE_CONFIGS["hybrid_reranked"],
+            {**evaluation.PIPELINE_CONFIGS["hybrid"], "use_rerank": True},
+        )
+        # MMR is evaluated separately (run_mmr_diversity_check), never as
+        # part of the recall table, since it trades relevance for
+        # diversity by design and isn't expected to raise Recall@K.
+        self.assertFalse(
+            any(config["use_mmr"] for config in evaluation.PIPELINE_CONFIGS.values())
+        )
+        self.assertTrue(evaluation.MMR_CONFIG["use_mmr"])
+
     def test_chunk_keys_supports_exact_and_page_level_labels(self):
         self.assertEqual(
             evaluation.chunk_keys(
@@ -136,6 +149,7 @@ class EvaluationCommandTest(unittest.TestCase):
             )
             averages = {name: 0.5 for name in evaluation.PIPELINE_CONFIGS}
             details = [{"query": "leave", "config": "hybrid", "recall_at_3": 0.5}]
+            mmr_details = [{"query": "leave", "config": "hybrid_reranked_mmr", "recall_at_3": 0.4}]
 
             with patch.object(
                 sys,
@@ -152,6 +166,8 @@ class EvaluationCommandTest(unittest.TestCase):
             ), patch.object(
                 evaluation, "run_recall_comparison", return_value=(averages, details)
             ) as recall, patch.object(
+                evaluation, "run_mmr_diversity_check", return_value=(0.4, mmr_details)
+            ) as mmr, patch.object(
                 evaluation, "run_ragas_metrics", return_value=None
             ) as ragas:
                 evaluation.main()
@@ -162,7 +178,10 @@ class EvaluationCommandTest(unittest.TestCase):
         self.assertEqual(payload["k"], 3)
         self.assertEqual(payload["recall_at_k"], averages)
         self.assertEqual(payload["per_query"], details)
+        self.assertEqual(payload["mmr_diversity_check"]["recall_at_k"], 0.4)
+        self.assertEqual(payload["mmr_diversity_check"]["per_query"], mmr_details)
         recall.assert_called_once()
+        mmr.assert_called_once()
         ragas.assert_called_once()
 
     def test_main_rejects_missing_evaluation_file(self):

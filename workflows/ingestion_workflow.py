@@ -45,10 +45,15 @@ class IngestDocumentWorkflow:
 
         # Route: scanned/handwritten -> Textract, everything else -> Unstructured.io
         if doc_type == "scanned":
+            # Multi-page scanned PDFs go through Textract's async job API
+            # (upload -> poll -> paginate), which can take several minutes
+            # for large documents — longer timeout + heartbeat than the
+            # other activities, which are all synchronous and fast.
             extracted = await workflow.execute_activity(
                 activities.extract_with_textract,
                 args=[file_path],
-                start_to_close_timeout=timedelta(minutes=5),
+                start_to_close_timeout=timedelta(minutes=20),
+                heartbeat_timeout=timedelta(seconds=30),
                 retry_policy=retry_policy,
             )
         else:

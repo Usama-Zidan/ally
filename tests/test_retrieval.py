@@ -375,9 +375,14 @@ class RetrievalUnitTest(unittest.TestCase):
             self.assertIsNone(run_ragas_metrics([], k=3))
         retrieve_mock.assert_not_called()
 
-    def test_dense_search_returns_empty_when_qdrant_is_unavailable(self):
+    def test_dense_search_raises_when_qdrant_is_unavailable(self):
+        # dense_search intentionally does NOT swallow this into an empty
+        # list: a connection failure and "no relevant documents" must stay
+        # distinguishable, especially for the eval harness (see
+        # qdrant_store.dense_search's docstring/comment for the rationale).
         with patch("services.retrieval.qdrant_store.get_client", side_effect=RuntimeError("offline")):
-            self.assertEqual(dense_search("annual leave"), [])
+            with self.assertRaises(RuntimeError):
+                dense_search("annual leave")
 
     def test_dense_search_translates_filters_and_maps_payloads(self):
         point = SimpleNamespace(

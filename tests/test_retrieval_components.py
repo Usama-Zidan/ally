@@ -309,13 +309,14 @@ class QdrantStoreTest(unittest.TestCase):
             qdrant_store.dense_search("   ", client=client)
         client.query_points.assert_not_called()
 
-    def test_dense_search_degrades_when_response_payload_is_invalid(self):
+    def test_dense_search_raises_when_response_payload_is_invalid(self):
         client = Mock()
         client.query_points.return_value = SimpleNamespace(
             points=[SimpleNamespace(id="bad", payload=None, score=0.5)]
         )
         with patch.object(qdrant_store, "embed_query", return_value=[0.1]):
-            self.assertEqual(qdrant_store.dense_search("query", client=client), [])
+            with self.assertRaises(RuntimeError):
+                qdrant_store.dense_search("query", client=client)
 
 
 if __name__ == "__main__":
