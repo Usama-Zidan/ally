@@ -22,3 +22,34 @@ jobs:
         run: python -m compileall -q config.py services workflows eval tests
       - name: Check diff whitespace
         run: git diff --check
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Start live stores
+        run: docker compose -f infra/docker-compose.yml up -d postgres qdrant
+      - name: Wait for PostgreSQL and Qdrant
+        run: |
+          for i in {1..30}; do
+            docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U assistant -d assistant_db && curl --fail --silent http://localhost:6333/healthz && exit 0
+            sleep 2
+          done
+          docker compose -f infra/docker-compose.yml ps
+          exit 1
+      - name: Run Docker integration tests
+        env:
+          RUN_INTEGRATION_TESTS: "1"
+        run: python -m unittest discover -s tests -p test_integration.py -q
+      - name: Collect container logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs
+      - name: Stop live stores
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v

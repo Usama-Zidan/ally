@@ -14,6 +14,7 @@ in eval/run_ragas_eval.py.
 from __future__ import annotations
 
 import structlog
+from fastapi.concurrency import run_in_threadpool
 
 from services.retrieval.bm25_index import BM25Index, INDEX_PATH
 from services.retrieval.embeddings import embed_query
@@ -49,6 +50,7 @@ def _get_bm25_index() -> BM25Index:
 
 def retrieve(
     query: str,
+    tenant_id: str,
     top_k: int = 5,
     candidate_pool_size: int = 20,
     use_bm25: bool = True,
@@ -58,29 +60,47 @@ def retrieve(
 ) -> list[dict]:
     """Return ranked chunks from the enabled dense, lexical, reranking, and MMR stages.
 
+    ``tenant_id`` is required and is enforced as a mandatory filter on both
+    the dense (Qdrant) and lexical (BM25) searches below — see
+    qdrant_store.dense_search and BM25Index.search for where it's actually
+    applied. It is intentionally a required positional argument rather
+    than something folded into ``metadata_filter``, so a caller cannot
+    accidentally retrieve across every tenant's documents by simply
+    forgetting to pass a filter.
+
     ``candidate_pool_size`` limits intermediate candidates, while ``top_k``
     limits the final result. Exact ``metadata_filter`` matches are passed to
-    dense and lexical search. Unavailable optional stages fall back to the
-    preceding stage.
+    dense and lexical search *in addition to* the tenant_id scoping above.
+    Unavailable optional stages fall back to the preceding stage.
+
+    This function makes several blocking calls (Qdrant/BM25/cross-encoder/
+    embedding-model inference) and must not be called directly from an
+    async function — use retrieve_async, which runs this in a threadpool,
+    from any async context (e.g. a FastAPI request handler).
 
     Raises:
-        ValueError: If the query is empty, limits are nonpositive, or the
-            candidate pool is smaller than ``top_k``.
+        ValueError: If the query or tenant_id is empty, limits are
+            nonpositive, or the candidate pool is smaller than ``top_k``.
     """
     if not query.strip():
         raise ValueError("query must not be empty")
+    if not tenant_id.strip():
+        raise ValueError("tenant_id must not be empty")
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
     if candidate_pool_size < top_k:
         raise ValueError("candidate_pool_size must be greater than or equal to top_k")
 
-    dense_results = dense_search(query, top_k=candidate_pool_size, metadata_filter=metadata_filter)
+    dense_results = dense_search(
+        query, tenant_id, top_k=candidate_pool_size, metadata_filter=metadata_filter
+    )
     log.info("dense_search_done", num_results=len(dense_results))
 
     if use_bm25:
         try:
             bm25_results = _get_bm25_index().search(
                 query,
+                tenant_id,
                 top_k=candidate_pool_size,
                 metadata_filter=metadata_filter,
             )
@@ -120,3 +140,18 @@ def retrieve(
         final = reranked[:top_k]
 
     return final
+
+
+async def retrieve_async(*args, **kwargs) -> list[dict]:
+    """Async-safe wrapper around retrieve().
+
+    retrieve() calls Qdrant, BM25, the cross-encoder reranker, and the
+    embedding model — all blocking, CPU/network-bound calls. Calling it
+    directly from an async def request handler (e.g. the future Phase 3
+    chat endpoint) would block the event loop for the duration of every
+    one of those calls, freezing every other concurrent request/WebSocket
+    on the same worker. run_in_threadpool moves the whole call onto a
+    worker thread instead. Phase 3's /ws/chat handler should call this,
+    not retrieve() directly.
+    """
+    return await run_in_threadpool(retrieve, *args, **kwargs)

@@ -23,8 +23,13 @@ with workflow.unsafe.imports_passed_through():
 @workflow.defn
 class IngestDocumentWorkflow:
     @workflow.run
-    async def run(self, file_path: str, filename: str) -> dict:
+    async def run(self, file_path: str, filename: str, tenant_id: str) -> dict:
         """Extract, chunk, persist, and index a document through retried activities.
+
+        ``tenant_id`` is resolved from the caller's API key at the upload
+        endpoint (see services.api.main.upload_document) and carried
+        through to persist_chunks and embed_and_index so every row and
+        vector this document produces is scoped to the owning tenant.
 
         Returns a summary containing the filename, chunk count, and persistence
         and indexing results.
@@ -73,20 +78,21 @@ class IngestDocumentWorkflow:
 
         stored = await workflow.execute_activity(
             activities.persist_chunks,
-            args=[chunks, filename],
+            args=[chunks, filename, tenant_id],
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=retry_policy,
         )
 
         indexed = await workflow.execute_activity(
             activities.embed_and_index,
-            args=[chunks, filename],
+            args=[chunks, filename, tenant_id],
             start_to_close_timeout=timedelta(minutes=10),
             retry_policy=retry_policy,
         )
 
         return {
             "filename": filename,
+            "tenant_id": tenant_id,
             "num_chunks": len(chunks),
             "stored": stored,
             "indexed": indexed,

@@ -250,13 +250,20 @@ def _pack_sentences(sentences: list[str], max_chars: int, overlap_chars: int) ->
     current: list[str] = []
     current_len = 0
 
-    def flush_current() -> list[str]:
-        """Returns the sentences to carry into the next chunk as overlap."""
-        chunks.append(" ".join(current))
+    def build_overlap(budget: int) -> list[str]:
+        """Returns the trailing sentences of the just-flushed chunk that fit
+        within ``budget`` characters, to prefix the next chunk.
+
+        The budget is the smaller of overlap_chars and whatever space is
+        left in the next chunk after the sentence that triggered the flush.
+        Without that second constraint, a large overlap_chars could carry
+        over more text than the next chunk has room for, producing a chunk
+        longer than max_chars.
+        """
         overlap: list[str] = []
         overlap_len = 0
         for sentence in reversed(current):
-            if overlap_len + len(sentence) > overlap_chars:
+            if overlap_len + len(sentence) + 1 > budget:
                 break
             overlap.insert(0, sentence)
             overlap_len += len(sentence) + 1
@@ -283,7 +290,8 @@ def _pack_sentences(sentences: list[str], max_chars: int, overlap_chars: int) ->
             continue
 
         if current and current_len + sentence_len > max_chars:
-            current = flush_current()
+            chunks.append(" ".join(current))
+            current = build_overlap(min(overlap_chars, max_chars - sentence_len))
             current_len = sum(len(s) + 1 for s in current)
 
         current.append(sentence)
@@ -320,8 +328,14 @@ async def chunk_pages(
 
 
 @activity.defn
-async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
-    """Replace all PostgreSQL chunk rows for ``filename`` in one transaction.
+async def persist_chunks(chunks: list[dict[str, Any]], filename: str, tenant_id: str) -> bool:
+    """Replace all PostgreSQL chunk rows for ``filename`` within
+    ``tenant_id`` in one transaction.
+
+    Scoped by tenant_id AND filename so two tenants can each have a
+    "policy.pdf" without one's re-ingestion touching the other's rows —
+    see infra/postgres/002_auth_and_tenancy.sql for the corresponding
+    (tenant_id, filename, page_number, chunk_index) unique constraint.
 
     Each chunk's input position is stored as its ``chunk_index``. Returns
     ``True`` after the replacement is committed.
@@ -331,16 +345,19 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
     conn = psycopg2.connect(POSTGRES_DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM document_chunks WHERE filename = %s;", (filename,))
+            cur.execute(
+                "DELETE FROM document_chunks WHERE tenant_id = %s AND filename = %s;",
+                (tenant_id, filename),
+            )
             for idx, chunk in enumerate(chunks):
                 cur.execute(
                     """
-                    INSERT INTO document_chunks (filename, page_number, chunk_index, text)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (filename, page_number, chunk_index) DO UPDATE
+                    INSERT INTO document_chunks (tenant_id, filename, page_number, chunk_index, text)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, filename, page_number, chunk_index) DO UPDATE
                         SET text = EXCLUDED.text;
                     """,
-                    (filename, chunk["page_number"], idx, chunk["text"]),
+                    (tenant_id, filename, chunk["page_number"], idx, chunk["text"]),
                 )
         conn.commit()
         return True
@@ -349,14 +366,14 @@ async def persist_chunks(chunks: list[dict[str, Any]], filename: str) -> bool:
 
 
 @activity.defn
-async def embed_and_index(chunks: list[dict[str, Any]], filename: str) -> bool:
+async def embed_and_index(chunks: list[dict[str, Any]], filename: str, tenant_id: str) -> bool:
     """Upsert ``chunks`` into Qdrant, then rebuild BM25 from PostgreSQL.
 
-    Deletes this filename's existing Qdrant points first. Without that,
-    re-ingesting a document that now produces fewer chunks than before
-    leaves the old, higher-index points behind — they stay retrievable
-    even though persist_chunks has already deleted the corresponding rows
-    from Postgres, so the two stores silently disagree.
+    Deletes this tenant's existing Qdrant points for ``filename`` first.
+    Without that, re-ingesting a document that now produces fewer chunks
+    than before leaves the old, higher-index points behind — they stay
+    retrievable even though persist_chunks has already deleted the
+    corresponding rows from Postgres, so the two stores silently disagree.
     """
     from services.retrieval.bm25_index import rebuild_index_from_postgres
     from services.retrieval.qdrant_store import (
@@ -366,15 +383,16 @@ async def embed_and_index(chunks: list[dict[str, Any]], filename: str) -> bool:
         make_chunk_id,
     )
 
-    delete_by_filename(filename)
+    delete_by_filename(tenant_id, filename)
 
     retrieval_chunks = [
         Chunk(
-            id=make_chunk_id(filename, chunk["page_number"], index),
+            id=make_chunk_id(tenant_id, filename, chunk["page_number"], index),
             text=chunk["text"],
             filename=filename,
             page_number=chunk["page_number"],
             chunk_index=index,
+            tenant_id=tenant_id,
         )
         for index, chunk in enumerate(chunks)
     ]

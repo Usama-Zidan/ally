@@ -23,13 +23,19 @@ log = structlog.get_logger()
 
 
 def load_chunks_from_postgres() -> list[Chunk]:
-    """Load ordered PostgreSQL chunk rows with deterministic retrieval IDs."""
+    """Load ordered PostgreSQL chunk rows with deterministic retrieval IDs.
+
+    Loads every tenant's chunks — this is an operator-run backfill, not a
+    request path, so it is deliberately not tenant-scoped. Each resulting
+    Chunk still carries its own tenant_id, so the vectors it writes to
+    Qdrant remain correctly scoped per tenant.
+    """
     conn = psycopg2.connect(POSTGRES_DSN)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT filename, page_number, chunk_index, text "
-                "FROM document_chunks ORDER BY filename, page_number, chunk_index;"
+                "SELECT tenant_id, filename, page_number, chunk_index, text "
+                "FROM document_chunks ORDER BY tenant_id, filename, page_number, chunk_index;"
             )
             rows = cur.fetchall()
     finally:
@@ -37,13 +43,14 @@ def load_chunks_from_postgres() -> list[Chunk]:
 
     return [
         Chunk(
-            id=make_chunk_id(filename, page_number, chunk_index),
+            id=make_chunk_id(str(tenant_id), filename, page_number, chunk_index),
             text=text,
             filename=filename,
             page_number=page_number,
             chunk_index=chunk_index,
+            tenant_id=str(tenant_id),
         )
-        for filename, page_number, chunk_index, text in rows
+        for tenant_id, filename, page_number, chunk_index, text in rows
     ]
 
 
@@ -52,7 +59,10 @@ def main() -> None:
     chunks = load_chunks_from_postgres()
     log.info("chunks_loaded_from_postgres", count=len(chunks))
     index_chunks(chunks)
-    rebuild_index_from_postgres()
+    # force=True: this is an explicit operator-initiated backfill, so it
+    # must actually rebuild rather than be skipped by the debounce window
+    # that throttles the per-document rebuilds in embed_and_index.
+    rebuild_index_from_postgres(force=True)
     log.info("retrieval_indexes_rebuilt", count=len(chunks))
     print(f"Indexed {len(chunks)} chunks into Qdrant and rebuilt the BM25 index.")
 

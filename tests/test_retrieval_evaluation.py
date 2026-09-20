@@ -48,13 +48,15 @@ class RecallEvaluationTest(unittest.TestCase):
             {"query": "second", "relevant_chunks": ["second-id"]},
         ]
 
-        def retrieve(query, top_k, **configuration):
-            del top_k
+        def retrieve(query, tenant_id, top_k, **configuration):
+            del top_k, tenant_id
             result_id = f"{query}-id" if configuration["use_bm25"] else "miss"
             return [{"id": result_id, "filename": "a.pdf", "page_number": 1}]
 
         with patch.object(evaluation, "retrieve", side_effect=retrieve) as retrieve_mock:
-            averages, per_query = evaluation.run_recall_comparison(queries, k=3)
+            averages, per_query = evaluation.run_recall_comparison(
+                queries, k=3, tenant_id="tenant-a"
+            )
 
         self.assertEqual(
             averages,
@@ -64,6 +66,9 @@ class RecallEvaluationTest(unittest.TestCase):
         self.assertEqual(retrieve_mock.call_count, 6)
         for invocation in retrieve_mock.call_args_list:
             self.assertEqual(invocation.kwargs["top_k"], 3)
+            # Every retrieval in the eval harness must be tenant-scoped —
+            # an unscoped call would search across all tenants' corpora.
+            self.assertEqual(invocation.args[1], "tenant-a")
 
     def test_run_recall_comparison_handles_empty_evaluation_set(self):
         averages, per_query = evaluation.run_recall_comparison([])
@@ -78,20 +83,29 @@ class RagasEvaluationTest(unittest.TestCase):
             self.assertIsNone(evaluation.run_ragas_metrics([{"query": "unused"}]))
 
     def test_ragas_builds_dataset_from_retrieved_contexts(self):
-        dataset_type = Mock()
-        dataset = object()
-        dataset_type.from_list.return_value = dataset
+        # Mirrors the ragas >=0.2 API that ragas==0.4.3 actually exposes:
+        # SingleTurnSample/EvaluationDataset with user_input/reference/
+        # retrieved_contexts field names, metric *classes* that must be
+        # instantiated, and an explicit evaluator LLM passed to evaluate().
+        sample_type = Mock(side_effect=lambda **kwargs: ("sample", kwargs))
+        dataset_type = Mock(return_value="dataset")
         evaluate = Mock(return_value={"context_recall": 0.75})
-        context_precision = object()
-        context_recall = object()
+        precision_metric = Mock(return_value="precision-metric")
+        recall_metric = Mock(return_value="recall-metric")
+        llm_wrapper = Mock(return_value="wrapped-llm")
+        chat_openai = Mock(return_value="chat-model")
 
-        datasets_module = types.ModuleType("datasets")
         ragas_module = types.ModuleType("ragas")
         metrics_module = types.ModuleType("ragas.metrics")
-        setattr(datasets_module, "Dataset", dataset_type)
+        llms_module = types.ModuleType("ragas.llms")
+        langchain_openai_module = types.ModuleType("langchain_openai")
+        setattr(ragas_module, "SingleTurnSample", sample_type)
+        setattr(ragas_module, "EvaluationDataset", dataset_type)
         setattr(ragas_module, "evaluate", evaluate)
-        setattr(metrics_module, "context_precision", context_precision)
-        setattr(metrics_module, "context_recall", context_recall)
+        setattr(metrics_module, "LLMContextPrecisionWithReference", precision_metric)
+        setattr(metrics_module, "LLMContextRecall", recall_metric)
+        setattr(llms_module, "LangchainLLMWrapper", llm_wrapper)
+        setattr(langchain_openai_module, "ChatOpenAI", chat_openai)
 
         entry = {
             "query": "What is the leave policy?",
@@ -101,29 +115,36 @@ class RagasEvaluationTest(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch.dict(
             sys.modules,
             {
-                "datasets": datasets_module,
                 "ragas": ragas_module,
                 "ragas.metrics": metrics_module,
+                "ragas.llms": llms_module,
+                "langchain_openai": langchain_openai_module,
             },
         ), patch.object(evaluation, "retrieve", return_value=retrieved) as retrieve:
-            result = evaluation.run_ragas_metrics([entry], k=2)
+            result = evaluation.run_ragas_metrics([entry], k=2, tenant_id="tenant-a")
 
         retrieve.assert_called_once_with(
             entry["query"],
+            "tenant-a",
             top_k=2,
             **evaluation.PIPELINE_CONFIGS["hybrid_reranked"],
         )
-        dataset_type.from_list.assert_called_once_with(
-            [
-                {
-                    "question": entry["query"],
-                    "contexts": ["Annual leave is available."],
-                    "ground_truth": entry["ground_truth"],
-                }
-            ]
+        sample_type.assert_called_once_with(
+            user_input=entry["query"],
+            retrieved_contexts=["Annual leave is available."],
+            reference=entry["ground_truth"],
+        )
+        dataset_type.assert_called_once_with(
+            samples=[("sample", {
+                "user_input": entry["query"],
+                "retrieved_contexts": ["Annual leave is available."],
+                "reference": entry["ground_truth"],
+            })]
         )
         evaluate.assert_called_once_with(
-            dataset, metrics=[context_precision, context_recall]
+            dataset="dataset",
+            metrics=["precision-metric", "recall-metric"],
+            llm="wrapped-llm",
         )
         self.assertEqual(result, {"context_recall": 0.75})
 

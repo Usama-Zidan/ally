@@ -12,9 +12,11 @@ class Settings:
     project_name: str
     temporal_address: str
     upload_dir: Path
+    max_upload_bytes: int
     aws_region: str
     postgres_dsn: str
     bm25_index_path: Path
+    bm25_rebuild_min_interval_seconds: float
     qdrant_url: str
     qdrant_api_key: str
     qdrant_collection: str
@@ -37,6 +39,8 @@ class Settings:
             raise ValueError("QDRANT_COLLECTION must not be empty")
         if not self.embedding_model.strip():
             raise ValueError("EMBEDDING_MODEL must not be empty")
+        if self.max_upload_bytes <= 0:
+            raise ValueError("MAX_UPLOAD_BYTES must be greater than zero")
 
 
 def _load_settings() -> Settings:
@@ -45,6 +49,7 @@ def _load_settings() -> Settings:
         project_name=os.getenv("PROJECT_NAME", "Ally"),
         temporal_address=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
         upload_dir=Path(os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "ally_uploads"))),
+        max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))),  # 50 MB
         aws_region=os.getenv("AWS_REGION", "us-east-1"),
         textract_s3_bucket=os.getenv("TEXTRACT_S3_BUCKET", ""),
         postgres_dsn=os.getenv(
@@ -53,6 +58,9 @@ def _load_settings() -> Settings:
         ),
         bm25_index_path=Path(
             os.getenv("BM25_INDEX_PATH", os.path.join(tempfile.gettempdir(), "bm25_index.pkl"))
+        ),
+        bm25_rebuild_min_interval_seconds=float(
+            os.getenv("BM25_REBUILD_MIN_INTERVAL_SECONDS", "60")
         ),
         qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333"),
         qdrant_api_key=os.getenv("QDRANT_API_KEY", ""),
@@ -70,10 +78,12 @@ settings = _load_settings()
 PROJECT_NAME = settings.project_name
 TEMPORAL_ADDRESS = settings.temporal_address
 UPLOAD_DIR = str(settings.upload_dir)
+MAX_UPLOAD_BYTES = settings.max_upload_bytes
 AWS_REGION = settings.aws_region
 TEXTRACT_S3_BUCKET = settings.textract_s3_bucket
 POSTGRES_DSN = settings.postgres_dsn
 BM25_INDEX_PATH = str(settings.bm25_index_path)
+BM25_REBUILD_MIN_INTERVAL_SECONDS = settings.bm25_rebuild_min_interval_seconds
 QDRANT_URL = settings.qdrant_url
 QDRANT_API_KEY = settings.qdrant_api_key
 QDRANT_COLLECTION = settings.qdrant_collection

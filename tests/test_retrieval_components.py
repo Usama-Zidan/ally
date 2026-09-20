@@ -16,43 +16,57 @@ class BM25IndexTest(unittest.TestCase):
         index = BM25Index()
         index.build(
             [
-                {"id": "match", "text": "Annual-leave policy", "filename": "hr.pdf"},
-                {"id": "other", "text": "Security handbook", "filename": "it.pdf"},
+                {"id": "match", "text": "Annual-leave policy", "filename": "hr.pdf",
+ "tenant_id": "tenant-a",
+                },
+                {"id": "other", "text": "Security handbook", "filename": "it.pdf",
+ "tenant_id": "tenant-a",
+                },
             ]
         )
 
-        self.assertEqual([item["id"] for item in index.search("ANNUAL, leave!")], ["match"])
+        self.assertEqual([item["id"] for item in index.search("ANNUAL, leave!", "tenant-a")], ["match"])
 
     def test_search_uses_document_id_as_stable_tie_breaker(self):
         index = BM25Index()
         index.build(
             [
-                {"id": "b", "text": "same term"},
-                {"id": "a", "text": "same term"},
+                {"id": "b", "text": "same term",
+ "tenant_id": "tenant-a",
+                },
+                {"id": "a", "text": "same term",
+ "tenant_id": "tenant-a",
+                },
             ]
         )
 
-        self.assertEqual([item["id"] for item in index.search("term")], ["a", "b"])
+        self.assertEqual([item["id"] for item in index.search("term", "tenant-a")], ["a", "b"])
 
     def test_search_rejects_non_positive_limit_and_ignores_blank_query(self):
         index = BM25Index()
-        index.build([{"id": "one", "text": "annual leave"}])
+        index.build([{"id": "one", "text": "annual leave",
+ "tenant_id": "tenant-a",
+                },])
 
         with self.assertRaisesRegex(ValueError, "top_k"):
-            index.search("annual", top_k=0)
-        self.assertEqual(index.search("   "), [])
+            index.search("annual", "tenant-a", top_k=0)
+        self.assertEqual(index.search("   ", "tenant-a"), [])
 
     def test_search_applies_all_metadata_filter_fields(self):
         index = BM25Index()
         index.build(
             [
-                {"id": "page-1", "text": "annual leave", "filename": "hr.pdf", "page_number": 1},
-                {"id": "page-2", "text": "annual leave", "filename": "hr.pdf", "page_number": 2},
+                {"id": "page-1", "text": "annual leave", "filename": "hr.pdf", "page_number": 1,
+ "tenant_id": "tenant-a",
+                },
+                {"id": "page-2", "text": "annual leave", "filename": "hr.pdf", "page_number": 2,
+ "tenant_id": "tenant-a",
+                },
             ]
         )
 
         results = index.search(
-            "annual leave",
+            "annual leave", "tenant-a",
             metadata_filter={"filename": "hr.pdf", "page_number": 2},
         )
 
@@ -61,7 +75,7 @@ class BM25IndexTest(unittest.TestCase):
     def test_rebuild_index_reads_ordered_rows_and_closes_connection(self):
         connection = MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [("policy.pdf", 2, 3, "annual leave")]
+        cursor.fetchall.return_value = [("tenant-a", "policy.pdf", 2, 3, "annual leave")]
 
         with patch(
             "services.retrieval.bm25_index.psycopg2.connect",
@@ -69,11 +83,13 @@ class BM25IndexTest(unittest.TestCase):
         ) as connect, patch.object(BM25Index, "save") as save, patch.dict(
             "os.environ", {"POSTGRES_DSN": "postgresql://override/test"}
         ):
-            index = rebuild_index_from_postgres()
+            index = rebuild_index_from_postgres(force=True)
 
         connect.assert_called_once_with("postgresql://override/test")
         cursor.execute.assert_called_once()
-        self.assertIn("ORDER BY filename, page_number, chunk_index", cursor.execute.call_args.args[0])
+        self.assertIn("ORDER BY tenant_id, filename, page_number, chunk_index", cursor.execute.call_args.args[0])
+        if index is None:
+            self.fail("rebuild_index_from_postgres() returned None")
         self.assertEqual(index.doc_metadata[0]["filename"], "policy.pdf")
         self.assertEqual(index.doc_metadata[0]["chunk_index"], 3)
         save.assert_called_once_with()
@@ -84,8 +100,14 @@ class FusionTest(unittest.TestCase):
     def test_fusion_accumulates_reciprocal_rank_scores_and_preserves_first_payload(self):
         fused = reciprocal_rank_fusion(
             [
-                [{"id": "shared", "text": "dense"}, {"id": "dense", "text": "only"}],
-                [{"id": "shared", "text": "lexical"}],
+                [{"id": "shared", "text": "dense",
+ "tenant_id": "tenant-a",
+                }, {"id": "dense", "text": "only",
+ "tenant_id": "tenant-a",
+                },],
+                [{"id": "shared", "text": "lexical",
+ "tenant_id": "tenant-a",
+                },],
             ],
             k=10,
         )
@@ -134,9 +156,15 @@ class EmbeddingTest(unittest.TestCase):
 class MMRTest(unittest.TestCase):
     def test_mmr_balances_relevance_with_diversity(self):
         candidates = [
-            {"id": "best", "text": "best"},
-            {"id": "duplicate", "text": "duplicate"},
-            {"id": "diverse", "text": "diverse"},
+            {"id": "best", "text": "best",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "duplicate", "text": "duplicate",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "diverse", "text": "diverse",
+ "tenant_id": "tenant-a",
+                },
         ]
         candidate_vectors = [[0.9, 0.1], [0.8, 0.2], [0.0, 1.0]]
 
@@ -146,7 +174,11 @@ class MMRTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in selected], ["best", "diverse"])
 
     def test_mmr_returns_all_available_candidates_when_limit_is_larger(self):
-        candidates = [{"id": "one", "text": "one"}, {"id": "two", "text": "two"}]
+        candidates = [{"id": "one", "text": "one",
+ "tenant_id": "tenant-a",
+                }, {"id": "two", "text": "two",
+ "tenant_id": "tenant-a",
+                },]
         with patch.object(mmr, "embed_texts", return_value=[[1.0, 0.0], [0.0, 1.0]]):
             selected = mmr.mmr_select([1.0, 0.0], candidates, top_k=5)
 
@@ -155,7 +187,9 @@ class MMRTest(unittest.TestCase):
     def test_mmr_rejects_mismatched_embedding_dimensions(self):
         with patch.object(mmr, "embed_texts", return_value=[[1.0, 0.0, 0.0]]):
             with self.assertRaisesRegex(ValueError, "matching dimensions"):
-                mmr.mmr_select([1.0, 0.0], [{"id": "one", "text": "one"}])
+                mmr.mmr_select([1.0, 0.0], [{"id": "one", "text": "one",
+ "tenant_id": "tenant-a",
+                },])
 
     def test_mmr_short_circuits_without_embedding_empty_candidates(self):
         with patch.object(mmr, "embed_texts") as embed:
@@ -169,9 +203,15 @@ class RerankerTest(unittest.TestCase):
         model = Mock()
         model.predict.return_value = [0.1, 0.9, 0.5]
         candidates = [
-            {"id": "low", "text": "low"},
-            {"id": "high", "text": "high"},
-            {"id": "middle", "text": "middle"},
+            {"id": "low", "text": "low",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "high", "text": "high",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "middle", "text": "middle",
+ "tenant_id": "tenant-a",
+                },
         ]
 
         with patch.object(reranker, "_get_reranker", return_value=model):
@@ -233,8 +273,8 @@ class QdrantStoreTest(unittest.TestCase):
     def test_index_chunks_embeds_and_upserts_payloads(self):
         client = Mock()
         chunks = [
-            Chunk("one", "annual leave", "hr.pdf", 2, 4),
-            Chunk("two", "security review", "it.pdf", 3, 1),
+            Chunk("one", "annual leave", "hr.pdf", 2, 4, "tenant-a"),
+            Chunk("two", "security review", "it.pdf", 3, 1, "tenant-a"),
         ]
         vectors = [[0.0] * qdrant_store.VECTOR_SIZE, [1.0] * qdrant_store.VECTOR_SIZE]
 
@@ -275,7 +315,7 @@ class QdrantStoreTest(unittest.TestCase):
         )
         with patch.object(qdrant_store, "embed_query", return_value=[0.1, 0.2]):
             results = qdrant_store.dense_search(
-                "annual leave",
+                "annual leave", "tenant-a",
                 top_k=3,
                 metadata_filter={"filename": "hr.pdf"},
                 client=client,
@@ -291,7 +331,8 @@ class QdrantStoreTest(unittest.TestCase):
                     "page_number": 2,
                     "chunk_index": 0,
                     "score": 0.91,
-                }
+                    "tenant_id": "tenant-a",
+                },
             ],
         )
         query = client.query_points.call_args.kwargs
@@ -304,9 +345,9 @@ class QdrantStoreTest(unittest.TestCase):
     def test_dense_search_validates_query_and_limit_before_external_calls(self):
         client = Mock()
         with self.assertRaisesRegex(ValueError, "top_k"):
-            qdrant_store.dense_search("query", top_k=0, client=client)
+            qdrant_store.dense_search("query", "tenant-a", top_k=0, client=client)
         with self.assertRaisesRegex(ValueError, "query"):
-            qdrant_store.dense_search("   ", client=client)
+            qdrant_store.dense_search("   ", "tenant-a", client=client)
         client.query_points.assert_not_called()
 
     def test_dense_search_raises_when_response_payload_is_invalid(self):
@@ -316,7 +357,7 @@ class QdrantStoreTest(unittest.TestCase):
         )
         with patch.object(qdrant_store, "embed_query", return_value=[0.1]):
             with self.assertRaises(RuntimeError):
-                qdrant_store.dense_search("query", client=client)
+                qdrant_store.dense_search("query", "tenant-a", client=client)
 
 
 if __name__ == "__main__":
