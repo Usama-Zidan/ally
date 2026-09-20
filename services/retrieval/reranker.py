@@ -24,6 +24,18 @@ def _get_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> CrossEncoder:
     return CrossEncoder(model_name)
 
 
+def warm_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> None:
+    """Loads the cross-encoder into the process-level cache eagerly.
+
+    bge-reranker-v2-m3 is ~568M params; the first call to rerank() after
+    a cold start blocks for tens of seconds while it loads. Calling this
+    once during app startup (see services.api.main's lifespan) means that
+    cost is paid before the app starts accepting traffic, not on some
+    unlucky user's first query.
+    """
+    _get_reranker(model_name)
+
+
 def rerank(
     query: str,
     candidates: list[dict],

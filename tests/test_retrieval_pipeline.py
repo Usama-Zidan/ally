@@ -38,6 +38,7 @@ class RetrievalPipelineTest(unittest.TestCase):
         ) as mmr_select:
             result = pipeline.retrieve(
                 "annual leave",
+                "tenant-a",
                 top_k=2,
                 candidate_pool_size=4,
                 metadata_filter=metadata_filter,
@@ -45,10 +46,10 @@ class RetrievalPipelineTest(unittest.TestCase):
 
         self.assertEqual(result, final)
         dense_search.assert_called_once_with(
-            "annual leave", top_k=4, metadata_filter=metadata_filter
+            "annual leave", "tenant-a", top_k=4, metadata_filter=metadata_filter
         )
         bm25_index.search.assert_called_once_with(
-            "annual leave", top_k=4, metadata_filter=metadata_filter
+            "annual leave", "tenant-a", top_k=4, metadata_filter=metadata_filter
         )
         fusion.assert_called_once_with([dense, lexical])
         rerank.assert_called_once_with("annual leave", fused, top_k=1)
@@ -68,6 +69,7 @@ class RetrievalPipelineTest(unittest.TestCase):
         ) as embed_query, patch.object(pipeline, "mmr_select") as mmr_select:
             result = pipeline.retrieve(
                 "query",
+                "tenant-a",
                 top_k=2,
                 candidate_pool_size=3,
                 use_bm25=False,
@@ -87,7 +89,8 @@ class RetrievalPipelineTest(unittest.TestCase):
             pipeline, "_get_bm25_index", side_effect=OSError("missing")
         ), patch.object(pipeline, "reciprocal_rank_fusion") as fusion:
             result = pipeline.retrieve(
-                "query", top_k=1, use_rerank=False, use_mmr=False
+                "query",
+                "tenant-a", top_k=1, use_rerank=False, use_mmr=False
             )
 
         self.assertEqual(result, dense[:1])
@@ -101,7 +104,8 @@ class RetrievalPipelineTest(unittest.TestCase):
             pipeline, "_get_bm25_index", return_value=bm25_index
         ), patch.object(pipeline, "reciprocal_rank_fusion") as fusion:
             result = pipeline.retrieve(
-                "query", top_k=1, use_rerank=False, use_mmr=False
+                "query",
+                "tenant-a", top_k=1, use_rerank=False, use_mmr=False
             )
 
         self.assertEqual(result, lexical)
@@ -118,6 +122,7 @@ class RetrievalPipelineTest(unittest.TestCase):
         ):
             result = pipeline.retrieve(
                 "query",
+                "tenant-a",
                 top_k=2,
                 candidate_pool_size=3,
                 use_bm25=False,
@@ -134,7 +139,7 @@ class RetrievalPipelineTest(unittest.TestCase):
         ), patch.object(pipeline, "embed_query", side_effect=RuntimeError("model unavailable")), patch.object(
             pipeline, "mmr_select"
         ) as mmr_select:
-            result = pipeline.retrieve("query", top_k=1, use_bm25=False)
+            result = pipeline.retrieve("query", "tenant-a", top_k=1, use_bm25=False)
 
         self.assertEqual(result, reranked)
         mmr_select.assert_not_called()

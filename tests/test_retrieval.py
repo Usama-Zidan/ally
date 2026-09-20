@@ -30,10 +30,10 @@ from services.retrieval.reranker import rerank
 
 class RetrievalUnitTest(unittest.TestCase):
     def test_chunk_id_is_deterministic(self):
-        first = make_chunk_id("policy.pdf", 2, 3)
-        second = make_chunk_id("policy.pdf", 2, 3)
+        first = make_chunk_id("tenant-a", "policy.pdf", 2, 3)
+        second = make_chunk_id("tenant-a", "policy.pdf", 2, 3)
         self.assertEqual(first, second)
-        self.assertNotEqual(first, make_chunk_id("policy.pdf", 2, 4))
+        self.assertNotEqual(first, make_chunk_id("tenant-a", "policy.pdf", 2, 4))
 
     def test_bm25_returns_matching_documents_and_applies_filter(self):
         index = BM25Index()
@@ -44,20 +44,22 @@ class RetrievalUnitTest(unittest.TestCase):
                     "text": "employees receive annual leave",
                     "filename": "hr.pdf",
                     "page_number": 1,
+                    "tenant_id": "tenant-a",
                 },
                 {
                     "id": "two",
                     "text": "servers require a security review",
                     "filename": "it.pdf",
                     "page_number": 2,
+                    "tenant_id": "tenant-a",
                 },
             ]
         )
 
-        results = index.search("annual leave", metadata_filter={"filename": "hr.pdf"})
+        results = index.search("annual leave", "tenant-a", metadata_filter={"filename": "hr.pdf"})
         self.assertEqual([result["id"] for result in results], ["one"])
         self.assertEqual(
-            index.search("annual leave", metadata_filter={"filename": "it.pdf"}),
+            index.search("annual leave", "tenant-a", metadata_filter={"filename": "it.pdf"}),
             [],
         )
 
@@ -69,16 +71,18 @@ class RetrievalUnitTest(unittest.TestCase):
                     "id": "other",
                     "text": "annual leave policy",
                     "filename": "other.pdf",
+                    "tenant_id": "tenant-a",
                 },
                 {
                     "id": "target",
                     "text": "annual leave policy",
                     "filename": "hr.pdf",
+                    "tenant_id": "tenant-a",
                 },
             ]
         )
         results = index.search(
-            "annual leave",
+            "annual leave", "tenant-a",
             top_k=1,
             metadata_filter={"filename": "hr.pdf"},
         )
@@ -88,36 +92,42 @@ class RetrievalUnitTest(unittest.TestCase):
         index = BM25Index()
         index.build(
             [
-                {"id": "z", "text": "policy handbook"},
-                {"id": "a", "text": "policy handbook"},
+                {"id": "z", "text": "policy handbook",
+ "tenant_id": "tenant-a",
+                },
+                {"id": "a", "text": "policy handbook",
+ "tenant_id": "tenant-a",
+                },
             ]
         )
 
         self.assertEqual(
-            [result["id"] for result in index.search("policy")],
+            [result["id"] for result in index.search("policy", "tenant-a")],
             ["a", "z"],
         )
         with self.assertRaisesRegex(ValueError, "top_k"):
-            index.search("policy", top_k=0)
+            index.search("policy", "tenant-a", top_k=0)
 
     def test_empty_bm25_index_is_searchable(self):
         index = BM25Index()
         index.build([])
-        self.assertEqual(index.search("anything"), [])
+        self.assertEqual(index.search("anything", "tenant-a"), [])
 
     def test_bm25_index_round_trips(self):
         index = BM25Index()
-        index.build([{"id": "one", "text": "annual leave", "filename": "hr.pdf"}])
+        index.build([{"id": "one", "text": "annual leave", "filename": "hr.pdf",
+ "tenant_id": "tenant-a",
+                },])
         with TemporaryDirectory() as directory:
             path = Path(directory) / "bm25.pkl"
             index.save(path)
             loaded = BM25Index.load(path)
-            self.assertEqual([item["id"] for item in loaded.search("annual leave")], ["one"])
+            self.assertEqual([item["id"] for item in loaded.search("annual leave", "tenant-a")], ["one"])
 
     def test_rebuild_bm25_index_reads_ordered_rows_and_closes_connection(self):
         connection = MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [("policy.pdf", 2, 3, "annual leave")]
+        cursor.fetchall.return_value = [("tenant-a", "policy.pdf", 2, 3, "annual leave")]
 
         with patch(
             "services.retrieval.bm25_index.psycopg2.connect",
@@ -126,23 +136,32 @@ class RetrievalUnitTest(unittest.TestCase):
             "services.retrieval.bm25_index.BM25Index.save"
         ) as save:
             with patch.dict(os.environ, {"POSTGRES_DSN": "postgresql://override"}):
-                index = rebuild_index_from_postgres()
+                index = cast(BM25Index, rebuild_index_from_postgres(force=True))
 
         cursor.execute.assert_called_once_with(
-            "SELECT filename, page_number, chunk_index, text "
-            "FROM document_chunks ORDER BY filename, page_number, chunk_index;"
+            "SELECT tenant_id, filename, page_number, chunk_index, text "
+            "FROM document_chunks ORDER BY tenant_id, filename, page_number, chunk_index;"
         )
         connection.close.assert_called_once_with()
         save.assert_called_once_with()
-        results = index.search("annual leave")
+        self.assertIsNotNone(index)
+        results = index.search("annual leave", "tenant-a")
         self.assertEqual(results[0]["filename"], "policy.pdf")
         self.assertEqual(results[0]["chunk_index"], 3)
 
     def test_rrf_deduplicates_results(self):
         fused = reciprocal_rank_fusion(
             [
-                [{"id": "one", "text": "a"}, {"id": "two", "text": "b"}],
-                [{"id": "two", "text": "b"}, {"id": "three", "text": "c"}],
+                [{"id": "one", "text": "a",
+ "tenant_id": "tenant-a",
+                }, {"id": "two", "text": "b",
+ "tenant_id": "tenant-a",
+                },],
+                [{"id": "two", "text": "b",
+ "tenant_id": "tenant-a",
+                }, {"id": "three", "text": "c",
+ "tenant_id": "tenant-a",
+                },],
             ]
         )
         self.assertEqual({result["id"] for result in fused}, {"one", "two", "three"})
@@ -151,8 +170,16 @@ class RetrievalUnitTest(unittest.TestCase):
     def test_rrf_accumulates_rank_scores_and_uses_stable_tie_breaking(self):
         fused = reciprocal_rank_fusion(
             [
-                [{"id": "b", "text": "first"}, {"id": "shared", "text": "old"}],
-                [{"id": "a", "text": "second"}, {"id": "shared", "text": "new"}],
+                [{"id": "b", "text": "first",
+ "tenant_id": "tenant-a",
+                }, {"id": "shared", "text": "old",
+ "tenant_id": "tenant-a",
+                },],
+                [{"id": "a", "text": "second",
+ "tenant_id": "tenant-a",
+                }, {"id": "shared", "text": "new",
+ "tenant_id": "tenant-a",
+                },],
             ],
             k=10,
         )
@@ -169,15 +196,25 @@ class RetrievalUnitTest(unittest.TestCase):
 
     def test_mmr_rejects_invalid_configuration(self):
         with self.assertRaises(ValueError):
-            mmr_select([1.0], [{"id": "one", "text": "a"}], lambda_param=1.1)
+            mmr_select([1.0], [{"id": "one", "text": "a",
+ "tenant_id": "tenant-a",
+                },], lambda_param=1.1)
         with self.assertRaises(ValueError):
-            mmr_select([1.0], [{"id": "one", "text": "a"}], top_k=-1)
+            mmr_select([1.0], [{"id": "one", "text": "a",
+ "tenant_id": "tenant-a",
+                },], top_k=-1)
 
     def test_mmr_balances_relevance_and_diversity_without_mutating_candidates(self):
         candidates = [
-            {"id": "best", "text": "best"},
-            {"id": "duplicate", "text": "duplicate"},
-            {"id": "diverse", "text": "diverse"},
+            {"id": "best", "text": "best",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "duplicate", "text": "duplicate",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "diverse", "text": "diverse",
+ "tenant_id": "tenant-a",
+                },
         ]
         with patch(
             "services.retrieval.mmr.embed_texts",
@@ -186,12 +223,16 @@ class RetrievalUnitTest(unittest.TestCase):
             selected = mmr_select([1.0, 0.0], candidates, top_k=2, lambda_param=0.4)
 
         self.assertEqual([item["id"] for item in selected], ["best", "diverse"])
-        self.assertEqual(candidates[0], {"id": "best", "text": "best"})
+        self.assertEqual(candidates[0], {"id": "best", "text": "best",
+ "tenant_id": "tenant-a",
+                },)
 
     def test_mmr_rejects_mismatched_embedding_dimensions(self):
         with patch("services.retrieval.mmr.embed_texts", return_value=[[1.0, 0.0]]):
             with self.assertRaisesRegex(ValueError, "matching dimensions"):
-                mmr_select([1.0], [{"id": "one", "text": "a"}])
+                mmr_select([1.0], [{"id": "one", "text": "a",
+ "tenant_id": "tenant-a",
+                },])
 
     def test_embedding_wrappers_forward_model_options_and_prefix_queries(self):
         model = Mock()
@@ -219,8 +260,12 @@ class RetrievalUnitTest(unittest.TestCase):
 
     def test_reranker_scores_sorts_and_limits_candidates(self):
         candidates = [
-            {"id": "low", "text": "weak match"},
-            {"id": "high", "text": "strong match"},
+            {"id": "low", "text": "weak match",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "high", "text": "strong match",
+ "tenant_id": "tenant-a",
+                },
         ]
         model = Mock()
         model.predict.return_value = np.array([0.1, 0.9])
@@ -230,7 +275,9 @@ class RetrievalUnitTest(unittest.TestCase):
         model.predict.assert_called_once_with(
             [("query", "weak match"), ("query", "strong match")]
         )
-        self.assertEqual(results, [{"id": "high", "text": "strong match", "rerank_score": 0.9}])
+        self.assertEqual(results, [{"id": "high", "text": "strong match", "rerank_score": 0.9,
+ "tenant_id": "tenant-a",
+                },])
 
     def test_reranker_does_not_load_model_for_empty_candidates(self):
         with patch("services.retrieval.reranker._get_reranker") as get_reranker:
@@ -239,16 +286,20 @@ class RetrievalUnitTest(unittest.TestCase):
 
     def test_pipeline_rejects_invalid_limits(self):
         with self.assertRaises(ValueError):
-            retrieve("")
+            retrieve("", "tenant-a")
         with self.assertRaises(ValueError):
-            retrieve("annual leave", top_k=0)
+            retrieve("annual leave", "tenant-a", top_k=0)
         with self.assertRaises(ValueError):
-            retrieve("annual leave", top_k=5, candidate_pool_size=4)
+            retrieve("annual leave", "tenant-a", top_k=5, candidate_pool_size=4)
 
     def test_pipeline_runs_all_hybrid_stages_with_requested_filter(self):
         metadata_filter = {"filename": "policy.pdf"}
-        dense = [{"id": "dense", "text": "dense"}]
-        lexical = [{"id": "lexical", "text": "lexical"}]
+        dense = [{"id": "dense", "text": "dense",
+ "tenant_id": "tenant-a",
+                },]
+        lexical = [{"id": "lexical", "text": "lexical",
+ "tenant_id": "tenant-a",
+                },]
         fused = dense + lexical
         reranked = list(reversed(fused))
         bm25 = Mock()
@@ -266,7 +317,7 @@ class RetrievalUnitTest(unittest.TestCase):
             "services.retrieval.pipeline.mmr_select", return_value=[reranked[0]]
         ) as mmr:
             results = retrieve(
-                "annual leave",
+                "annual leave", "tenant-a",
                 top_k=1,
                 candidate_pool_size=2,
                 metadata_filter=metadata_filter,
@@ -274,10 +325,10 @@ class RetrievalUnitTest(unittest.TestCase):
 
         self.assertEqual(results, [reranked[0]])
         dense_search_mock.assert_called_once_with(
-            "annual leave", top_k=2, metadata_filter=metadata_filter
+            "annual leave", "tenant-a", top_k=2, metadata_filter=metadata_filter
         )
         bm25.search.assert_called_once_with(
-            "annual leave", top_k=2, metadata_filter=metadata_filter
+            "annual leave", "tenant-a", top_k=2, metadata_filter=metadata_filter
         )
         fusion.assert_called_once_with([dense, lexical])
         rerank_mock.assert_called_once_with("annual leave", fused, top_k=2)
@@ -286,8 +337,12 @@ class RetrievalUnitTest(unittest.TestCase):
 
     def test_pipeline_falls_back_independently_when_optional_stages_fail(self):
         dense = [
-            {"id": "one", "text": "one"},
-            {"id": "two", "text": "two"},
+            {"id": "one", "text": "one",
+ "tenant_id": "tenant-a",
+                },
+            {"id": "two", "text": "two",
+ "tenant_id": "tenant-a",
+                },
         ]
         with patch("services.retrieval.pipeline.dense_search", return_value=dense), patch(
             "services.retrieval.pipeline._get_bm25_index", side_effect=RuntimeError("missing")
@@ -296,19 +351,21 @@ class RetrievalUnitTest(unittest.TestCase):
         ), patch(
             "services.retrieval.pipeline.embed_query", side_effect=RuntimeError("model offline")
         ):
-            results = retrieve("query", top_k=1, candidate_pool_size=2)
+            results = retrieve("query", "tenant-a", top_k=1, candidate_pool_size=2)
 
         self.assertEqual(results, [dense[0]])
 
     def test_pipeline_can_return_lexical_results_when_dense_search_is_empty(self):
-        lexical = [{"id": "lexical", "text": "exact phrase"}]
+        lexical = [{"id": "lexical", "text": "exact phrase",
+ "tenant_id": "tenant-a",
+                },]
         bm25 = Mock()
         bm25.search.return_value = lexical
         with patch("services.retrieval.pipeline.dense_search", return_value=[]), patch(
             "services.retrieval.pipeline._get_bm25_index", return_value=bm25
         ), patch("services.retrieval.pipeline.reciprocal_rank_fusion") as fusion:
             results = retrieve(
-                "exact phrase",
+                "exact phrase", "tenant-a",
                 top_k=1,
                 use_rerank=False,
                 use_mmr=False,
@@ -342,15 +399,20 @@ class RetrievalUnitTest(unittest.TestCase):
                 "id": "chunk-id",
                 "filename": "policy.pdf",
                 "page_number": 4,
-            }
+                "tenant_id": "tenant-a",
+                },
         ]
         self.assertEqual(recall_at_k(retrieved, ["chunk-id"], 1), 1.0)
         self.assertEqual(recall_at_k(retrieved, ["policy.pdf:p4"], 1), 1.0)
 
     def test_recall_respects_k_and_handles_no_relevant_chunks(self):
         retrieved = [
-            {"id": "first", "filename": "one.pdf", "page_number": 1},
-            {"id": "second", "filename": "two.pdf", "page_number": 2},
+            {"id": "first", "filename": "one.pdf", "page_number": 1,
+ "tenant_id": "tenant-a",
+                },
+            {"id": "second", "filename": "two.pdf", "page_number": 2,
+ "tenant_id": "tenant-a",
+                },
         ]
         self.assertEqual(recall_at_k(retrieved, ["second"], 1), 0.0)
         self.assertEqual(recall_at_k(retrieved, [], 2), 0.0)
@@ -360,7 +422,9 @@ class RetrievalUnitTest(unittest.TestCase):
             {"query": "leave", "relevant_chunks": ["hit"]},
             {"query": "security", "relevant_chunks": ["missing"]},
         ]
-        retrieved = [{"id": "hit", "filename": "policy.pdf", "page_number": 1}]
+        retrieved = [{"id": "hit", "filename": "policy.pdf", "page_number": 1,
+ "tenant_id": "tenant-a",
+                },]
         with patch("eval.run_ragas_eval.retrieve", return_value=retrieved) as retrieve_mock:
             averages, per_query = run_recall_comparison(eval_queries, k=1)
 
@@ -375,9 +439,14 @@ class RetrievalUnitTest(unittest.TestCase):
             self.assertIsNone(run_ragas_metrics([], k=3))
         retrieve_mock.assert_not_called()
 
-    def test_dense_search_returns_empty_when_qdrant_is_unavailable(self):
+    def test_dense_search_raises_when_qdrant_is_unavailable(self):
+        # dense_search intentionally does NOT swallow this into an empty
+        # list: a connection failure and "no relevant documents" must stay
+        # distinguishable, especially for the eval harness (see
+        # qdrant_store.dense_search's docstring/comment for the rationale).
         with patch("services.retrieval.qdrant_store.get_client", side_effect=RuntimeError("offline")):
-            self.assertEqual(dense_search("annual leave"), [])
+            with self.assertRaises(RuntimeError):
+                dense_search("annual leave", "tenant-a")
 
     def test_dense_search_translates_filters_and_maps_payloads(self):
         point = SimpleNamespace(
@@ -389,7 +458,7 @@ class RetrievalUnitTest(unittest.TestCase):
         client.query_points.return_value = SimpleNamespace(points=[point])
         with patch("services.retrieval.qdrant_store.embed_query", return_value=[0.1, 0.2]):
             results = dense_search(
-                "annual leave",
+                "annual leave", "tenant-a",
                 top_k=3,
                 metadata_filter={"filename": "hr.pdf"},
                 client=client,
@@ -405,7 +474,8 @@ class RetrievalUnitTest(unittest.TestCase):
                     "page_number": 2,
                     "chunk_index": 0,
                     "score": 0.75,
-                }
+                    "tenant_id": "tenant-a",
+                },
             ],
         )
         kwargs = client.query_points.call_args.kwargs
@@ -418,13 +488,13 @@ class RetrievalUnitTest(unittest.TestCase):
     def test_dense_search_validates_input_before_contacting_qdrant(self):
         client = Mock()
         with self.assertRaisesRegex(ValueError, "top_k"):
-            dense_search("query", top_k=0, client=client)
+            dense_search("query", "tenant-a", top_k=0, client=client)
         with self.assertRaisesRegex(ValueError, "query"):
-            dense_search("  ", client=client)
+            dense_search("  ", "tenant-a", client=client)
         client.query_points.assert_not_called()
 
     def test_index_chunks_rejects_incomplete_embeddings(self):
-        chunk = Chunk("one", "annual leave", "hr.pdf", 1, 0)
+        chunk = Chunk("one", "annual leave", "hr.pdf", 1, 0, "tenant-a")
         client = cast(QdrantClient, Mock(spec=QdrantClient))
         with patch(
             "services.retrieval.qdrant_store.embed_texts",
@@ -434,7 +504,7 @@ class RetrievalUnitTest(unittest.TestCase):
                 index_chunks([chunk], client=client)
 
     def test_index_chunks_rejects_wrong_embedding_dimension(self):
-        chunk = Chunk("one", "annual leave", "hr.pdf", 1, 0)
+        chunk = Chunk("one", "annual leave", "hr.pdf", 1, 0, "tenant-a")
         client = cast(QdrantClient, Mock(spec=QdrantClient))
         with patch(
             "services.retrieval.qdrant_store.embed_texts",
@@ -445,8 +515,8 @@ class RetrievalUnitTest(unittest.TestCase):
 
     def test_index_chunks_upserts_embedded_chunks_with_citation_payload(self):
         chunks = [
-            Chunk("one", "annual leave", "hr.pdf", 1, 0),
-            Chunk("two", "security review", "it.pdf", 2, 4),
+            Chunk("one", "annual leave", "hr.pdf", 1, 0, "tenant-a"),
+            Chunk("two", "security review", "it.pdf", 2, 4, "tenant-a"),
         ]
         client = Mock()
         vectors = [[0.0] * VECTOR_SIZE, [1.0] * VECTOR_SIZE]

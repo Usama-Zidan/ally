@@ -1,0 +1,15 @@
+{
+  "_comment": "Each entry: a query + the ground-truth answer + the set of chunk ids (or filename:page_number) known to contain the answer. Populate this by hand-labeling ~50-100 queries against your actual ingested corpus. This sample shows the expected shape only.",
+  "queries": [
+    {
+      "query": "query text here",
+      "ground_truth": "ground-truth answer text here",
+      "relevant_chunks": ["document.pdf:p4", "document.pdf:p5"]
+    },
+    {
+      "query": "another query text here",
+      "ground_truth": "another ground-truth answer text here",
+      "relevant_chunks": ["document2.pdf:p7"]
+    }
+  ]
+}
