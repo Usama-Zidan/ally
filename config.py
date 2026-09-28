@@ -93,9 +93,33 @@ REDIS_URL = settings.redis_url
 
 # LLM/provider/observability/integration routes.
 QWEN_VLLM_BASE_URL = os.getenv("QWEN_VLLM_BASE_URL", "http://localhost:8001/v1")
+QWEN_MODEL_NAME = os.getenv("QWEN_MODEL_NAME", "Qwen/Qwen3-7B")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "gpt-4o-mini")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+# How many times litellm.Router retries a single model before moving to
+# the next fallback, and the per-request timeout enforced on each attempt.
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+LLM_REQUEST_TIMEOUT_SECONDS = float(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "30"))
+
+# Circuit breaker around the LLM gateway: after this many consecutive
+# failures (retries and fallbacks all exhausted), stop attempting new
+# calls for CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS so a dead backend
+# doesn't force every chat message to pay the full retry+fallback latency
+# before failing.
+CIRCUIT_BREAKER_FAIL_MAX = int(os.getenv("CIRCUIT_BREAKER_FAIL_MAX", "5"))
+CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS = int(
+    os.getenv("CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS", "30")
+)
+
+# Chat: how many passages retrieve() returns as context per turn, and how
+# many prior turns (user+assistant messages, not pairs) are pulled from
+# MongoDB history and replayed into the prompt.
+CHAT_RETRIEVAL_TOP_K = int(os.getenv("CHAT_RETRIEVAL_TOP_K", "5"))
+CHAT_HISTORY_MAX_MESSAGES = int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "20"))
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "ally")
 
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")

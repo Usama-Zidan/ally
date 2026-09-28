@@ -10,6 +10,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from services.retrieval.sentence_transformers_loader import load_sentence_transformers
+
 if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
 
@@ -19,9 +21,7 @@ DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 @lru_cache(maxsize=1)
 def _get_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> CrossEncoder:
     """Return a cached cross-encoder for ``model_name``."""
-    from sentence_transformers import CrossEncoder
-
-    return CrossEncoder(model_name)
+    return load_sentence_transformers().CrossEncoder(model_name)
 
 
 def warm_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> None:

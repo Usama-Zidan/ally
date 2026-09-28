@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from config import EMBEDDING_MODEL
+from services.retrieval.sentence_transformers_loader import load_sentence_transformers
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -21,9 +22,7 @@ EMBEDDING_DIMENSION = 768
 @lru_cache(maxsize=1)
 def _get_model(model_name: str = DEFAULT_MODEL_NAME) -> SentenceTransformer:
     """Return a cached sentence-transformer model for ``model_name``."""
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(model_name)
+    return load_sentence_transformers().SentenceTransformer(model_name)
 
 
 def embed_texts(texts: list[str], model_name: str = DEFAULT_MODEL_NAME) -> list[list[float]]:

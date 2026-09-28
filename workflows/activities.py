@@ -63,9 +63,27 @@ async def extract_with_unstructured(file_path: str) -> list[dict[str, Any]]:
     real paragraph-length text to work with, same shape as
     extract_with_textract's output.
     """
-    from unstructured.partition.auto import partition
+    try:
+        from unstructured.partition.auto import partition
 
-    elements = partition(filename=file_path, include_page_breaks=True)
+        elements = partition(filename=file_path, include_page_breaks=True)
+    except ImportError as exc:
+        if os.path.splitext(file_path)[1].lower() != ".pdf":
+            raise
+
+        log.warning(
+            "unstructured_pdf_import_failed_using_pypdf",
+            file_path=file_path,
+            error=str(exc),
+        )
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        return [
+            {"page_number": page_number, "text": text, "category": "Text"}
+            for page_number, page in enumerate(reader.pages, start=1)
+            if (text := (page.extract_text() or "").strip())
+        ]
 
     pages: dict[int, list[str]] = {}
     last_known_page = 1

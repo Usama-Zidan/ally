@@ -323,7 +323,7 @@ class ChatWebSocketTest(unittest.TestCase):
             with self.assertRaises(Exception):
                 with client.websocket_connect("/ws/chat") as websocket:
                     websocket.receive_json()
-
+ 
     def test_chat_websocket_rejects_invalid_api_key(self):
         with patch.object(
             main.TemporalClient,
@@ -337,8 +337,14 @@ class ChatWebSocketTest(unittest.TestCase):
                     "/ws/chat?api_key=ally_wrong-key"
                 ) as websocket:
                     websocket.receive_json()
-
-    def test_chat_websocket_echoes_token_then_done_with_valid_key(self):
+ 
+    def _connected_chat_client(self, client, conversation_id=None):
+        url = f"/ws/chat?api_key={VALID_KEY}"
+        if conversation_id:
+            url += f"&conversation_id={conversation_id}"
+        return client.websocket_connect(url)
+ 
+    def test_chat_websocket_sends_ready_with_conversation_id_on_connect(self):
         with patch.object(
             main.TemporalClient,
             "connect",
@@ -346,19 +352,230 @@ class ChatWebSocketTest(unittest.TestCase):
         ), patch.object(main, "warm_reranker"), patch_auth(), TestClient(
             main.app
         ) as client:
-            with client.websocket_connect(
-                f"/ws/chat?api_key={VALID_KEY}"
-            ) as websocket:
+            with self._connected_chat_client(client) as websocket:
+                ready = websocket.receive_json()
+ 
+        self.assertEqual(ready["type"], "ready")
+        self.assertTrue(ready["conversation_id"])
+ 
+    def test_chat_websocket_reuses_conversation_id_when_provided(self):
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), TestClient(
+            main.app
+        ) as client:
+            with self._connected_chat_client(client, "existing-convo") as websocket:
+                ready = websocket.receive_json()
+ 
+        self.assertEqual(ready["conversation_id"], "existing-convo")
+ 
+    def test_chat_websocket_sends_no_context_message_without_calling_llm(self):
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), patch.object(
+            main, "retrieve_async", new=AsyncMock(return_value=[])
+        ), patch.object(
+            main.chat_history, "get_history", return_value=[]
+        ), patch.object(
+            main.chat_history, "append_turn"
+        ) as append_turn, patch.object(
+            main, "stream_chat_completion"
+        ) as stream_chat, TestClient(main.app) as client:
+            with self._connected_chat_client(client) as websocket:
+                websocket.receive_json()  # ready
+                websocket.send_text("What is the meaning of life?")
+ 
+                sources_msg = websocket.receive_json()
+                token_msg = websocket.receive_json()
+                done_msg = websocket.receive_json()
+ 
+        self.assertEqual(sources_msg, {"type": "sources", "sources": []})
+        self.assertEqual(token_msg["type"], "token")
+        self.assertIn("couldn't find", token_msg["content"])
+        self.assertEqual(done_msg, {"type": "done", "citations": []})
+        # No sources means no LLM call at all.
+        stream_chat.assert_not_called()
+        self.assertEqual(append_turn.call_count, 2)
+ 
+    def test_chat_websocket_streams_tokens_and_emits_page_level_citations(self):
+        sources = [
+            {
+                "text": "Employees receive 21 days of leave.",
+                "filename": "hr_policy.pdf",
+                "page_number": 3,
+                "chunk_index": 0,
+                "score": 0.91,
+            }
+        ]
+ 
+        async def fake_stream(messages):
+            self.assertEqual(messages[0]["role"], "system")
+            self.assertIn("[1]", messages[-1]["content"])
+            for token in ["Employees ", "receive 21 days ", "of leave [1]."]:
+                yield token
+ 
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), patch.object(
+            main, "retrieve_async", new=AsyncMock(return_value=sources)
+        ), patch.object(
+            main.chat_history, "get_history", return_value=[]
+        ), patch.object(
+            main.chat_history, "append_turn"
+        ) as append_turn, patch.object(
+            main, "stream_chat_completion", side_effect=fake_stream
+        ), TestClient(main.app) as client:
+            with self._connected_chat_client(client) as websocket:
+                websocket.receive_json()  # ready
+                websocket.send_text("How much leave do employees get?")
+ 
+                sources_msg = websocket.receive_json()
+                tokens = [websocket.receive_json() for _ in range(3)]
+                done_msg = websocket.receive_json()
+ 
+        self.assertEqual(
+            sources_msg,
+            {
+                "type": "sources",
+                "sources": [
+                    {
+                        "index": 1,
+                        "filename": "hr_policy.pdf",
+                        "page_number": 3,
+                        "score": 0.91,
+                        # The cited passage travels with its own citation
+                        # so a client can render the evidence, not just the
+                        # pointer to it.
+                        "text": "Employees receive 21 days of leave.",
+                    }
+                ],
+            },
+        )
+        self.assertEqual([t["content"] for t in tokens], ["Employees ", "receive 21 days ", "of leave [1]."])
+        self.assertEqual(done_msg["citations"], sources_msg["sources"])
+ 
+        # Both the user turn and the full assembled answer are persisted.
+        self.assertEqual(append_turn.call_count, 2)
+        user_call, assistant_call = append_turn.call_args_list
+        self.assertEqual(user_call.args[2:], ("user", "How much leave do employees get?"))
+        self.assertEqual(assistant_call.args[2], "assistant")
+        self.assertEqual(assistant_call.args[3], "Employees receive 21 days of leave [1].")
+ 
+    def test_chat_websocket_reports_retrieval_failure_and_keeps_socket_open(self):
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), patch.object(
+            main, "retrieve_async", new=AsyncMock(side_effect=RuntimeError("qdrant down"))
+        ), patch.object(
+            main.chat_history, "get_history", return_value=[]
+        ), TestClient(main.app) as client:
+            with self._connected_chat_client(client) as websocket:
+                websocket.receive_json()  # ready
+                websocket.send_text("anything")
+                error_msg = websocket.receive_json()
+ 
+                # Socket must still be usable for the next message.
+                websocket.send_text("ping")
+ 
+        self.assertEqual(error_msg["type"], "error")
+ 
+    def test_chat_websocket_reports_llm_gateway_failure_and_keeps_socket_open(self):
+        sources = [
+            {"text": "context", "filename": "a.pdf", "page_number": 1, "chunk_index": 0, "score": 0.5}
+        ]
+ 
+        async def failing_stream(messages):
+            raise main.LLMGatewayError("model host unavailable")
+            yield  # pragma: no cover - makes this an async generator
+ 
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), patch.object(
+            main, "retrieve_async", new=AsyncMock(return_value=sources)
+        ), patch.object(
+            main.chat_history, "get_history", return_value=[]
+        ), patch.object(
+            main.chat_history, "append_turn"
+        ) as append_turn, patch.object(
+            main, "stream_chat_completion", side_effect=failing_stream
+        ), TestClient(main.app) as client:
+            with self._connected_chat_client(client) as websocket:
+                websocket.receive_json()  # ready
+                websocket.send_text("question")
+                websocket.receive_json()  # sources
+                error_msg = websocket.receive_json()
+ 
+        self.assertEqual(error_msg, {"type": "error", "detail": "model host unavailable"})
+        # A failed generation is not persisted as a completed turn.
+        append_turn.assert_not_called()
+ 
+    def test_chat_websocket_truncates_source_preview(self):
+        long_text = "Employees receive " + ("x" * 5000)
+        sources = [
+            {"text": long_text, "filename": "hr_policy.pdf", "page_number": 3, "chunk_index": 0, "score": 0.9}
+        ]
+ 
+        async def fake_stream(messages):
+            del messages
+            yield "Answer [1]."
+ 
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), patch.object(
+            main, "retrieve_async", new=AsyncMock(return_value=sources)
+        ), patch.object(
+            main.chat_history, "get_history", return_value=[]
+        ), patch.object(
+            main.chat_history, "append_turn"
+        ), patch.object(
+            main, "stream_chat_completion", side_effect=fake_stream
+        ), TestClient(main.app) as client:
+            with self._connected_chat_client(client) as websocket:
+                websocket.receive_json()  # ready
+                websocket.send_text("question")
+                sources_msg = websocket.receive_json()
+ 
+        preview = sources_msg["sources"][0]["text"]
+        self.assertEqual(len(preview), main.SOURCE_PREVIEW_CHARS)
+        self.assertTrue(long_text.startswith(preview))
+ 
+    def test_chat_websocket_scopes_retrieval_and_history_to_resolved_tenant(self):
+        with patch.object(
+            main.TemporalClient,
+            "connect",
+            new=AsyncMock(side_effect=ConnectionError("offline")),
+        ), patch.object(main, "warm_reranker"), patch_auth(), patch.object(
+            main, "retrieve_async", new=AsyncMock(return_value=[])
+        ) as retrieve, patch.object(
+            main.chat_history, "get_history", return_value=[]
+        ), patch.object(
+            main.chat_history, "append_turn"
+        ) as append_turn, TestClient(main.app) as client:
+            with self._connected_chat_client(client, "convo-1") as websocket:
+                websocket.receive_json()  # ready
                 websocket.send_text("hello")
-                self.assertEqual(
-                    websocket.receive_json(),
-                    {"type": "token", "content": "(stub) you said: hello"},
-                )
-                self.assertEqual(
-                    websocket.receive_json(),
-                    {"type": "done", "citations": []},
-                )
-
-
+                websocket.receive_json()  # sources
+                websocket.receive_json()  # token
+                websocket.receive_json()  # done
+ 
+        retrieve.assert_awaited_once_with("hello", TENANT_ID, top_k=main.CHAT_RETRIEVAL_TOP_K)
+        for call in append_turn.call_args_list:
+            self.assertEqual(call.args[0], TENANT_ID)
+            self.assertEqual(call.args[1], "convo-1")
+ 
+ 
 if __name__ == "__main__":
     unittest.main()
+ 

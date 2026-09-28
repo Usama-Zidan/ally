@@ -11,8 +11,28 @@ import hashlib
 import secrets
 
 import psycopg2
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from config import POSTGRES_DSN
+
+# resolve_tenant() runs on every authenticated REST request and every
+# WebSocket connection, making it the single most-invoked external call
+# in the whole request path -- a momentary Postgres connection blip here
+# would otherwise surface as a spurious 500 (or a spuriously "invalid
+# key" 401, depending on how a caller handles the exception) on every
+# request until the blip passes. Retrying is scoped to
+# OperationalError specifically (connection refused, connection reset,
+# timeout) -- not to every exception -- since a query or integrity error
+# is not transient and retrying it would only waste time before failing
+# the same way anyway. reraise=True keeps the original exception type
+# after retries are exhausted, rather than wrapping it in tenacity's own
+# RetryError.
+_retry_on_transient_db_error = retry(
+    retry=retry_if_exception_type(psycopg2.OperationalError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.1, max=1),
+    reraise=True,
+)
 
 # Raw API keys carry this prefix so they're recognizable at a glance
 # (e.g. in a support ticket or an accidentally-committed .env file)
@@ -38,6 +58,7 @@ def generate_api_key() -> tuple[str, str]:
     return raw_key, hash_key(raw_key)
 
 
+@_retry_on_transient_db_error
 def resolve_tenant(raw_key: str | None) -> str | None:
     """Looks up the tenant_id owning ``raw_key``.
 
@@ -63,6 +84,7 @@ def resolve_tenant(raw_key: str | None) -> str | None:
         conn.close()
 
 
+@_retry_on_transient_db_error
 def create_tenant_with_key(tenant_name: str) -> tuple[str, str]:
     """Creates (or reuses) a tenant by name and issues it a fresh API key.
 
@@ -99,6 +121,7 @@ def create_tenant_with_key(tenant_name: str) -> tuple[str, str]:
         conn.close()
 
 
+@_retry_on_transient_db_error
 def revoke_api_key(raw_key: str) -> bool:
     """Revokes ``raw_key`` so resolve_tenant() no longer accepts it.
 
