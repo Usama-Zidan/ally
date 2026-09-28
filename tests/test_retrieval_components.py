@@ -1,17 +1,48 @@
+import importlib
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional, Union
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 from qdrant_client.models import Distance
 
-from services.retrieval import embeddings, mmr, qdrant_store, reranker
-from services.retrieval.bm25_index import BM25Index, rebuild_index_from_postgres
+from services.retrieval import (
+    embeddings,
+    mmr,
+    qdrant_store,
+    reranker,
+    sentence_transformers_loader,
+)
+from services.retrieval.bm25_index import (
+    BM25Index,
+    _resolve_index_path,
+    rebuild_index_from_postgres,
+)
 from services.retrieval.fusion import reciprocal_rank_fusion
 from services.retrieval.qdrant_store import Chunk
 
 
+class _BlockedPyarrowFinder:
+    """Import finder that reproduces the Windows Application Control block.
+
+    A real policy stops the DLL at load time, so pyarrow raises ImportError
+    from inside pyarrow/dataset.py. Raising from find_spec reproduces the
+    same failure from the import machinery's point of view.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in sentence_transformers_loader.STUBBED_MODULES:
+            raise ImportError("DLL load failed while importing _dataset")
+        return None
+
+
 class BM25IndexTest(unittest.TestCase):
+    def test_index_directory_path_gets_default_filename(self):
+        self.assertEqual(_resolve_index_path("."), Path("bm25_index.pkl"))
+
     def test_search_is_case_insensitive_and_tokenizes_punctuation(self):
         index = BM25Index()
         index.build(
@@ -227,6 +258,66 @@ class RerankerTest(unittest.TestCase):
         with patch.object(reranker, "_get_reranker") as get_reranker:
             self.assertEqual(reranker.rerank("query", []), [])
         get_reranker.assert_not_called()
+
+
+class PyarrowPlaceholderTest(unittest.TestCase):
+    """The shim that keeps sentence-transformers importable on hosts whose
+    Application Control policy blocks pyarrow's native _dataset extension."""
+
+    def test_healthy_host_uses_the_real_pyarrow_dataset_and_reuses_it(self):
+        loaded_real_extension = (
+            sentence_transformers_loader.ensure_pyarrow_dataset_importable()
+        )
+        module = importlib.import_module("pyarrow.dataset")
+
+        self.assertIs(sys.modules["pyarrow.dataset"], module)
+        self.assertEqual(
+            sentence_transformers_loader.ensure_pyarrow_dataset_importable(),
+            loaded_real_extension,
+        )
+        if loaded_real_extension:
+            self.assertNotIsInstance(module, sentence_transformers_loader._PlaceholderModule)
+
+    def test_blocked_extension_is_replaced_by_a_placeholder_that_satisfies_annotations(self):
+        pyarrow = importlib.import_module("pyarrow")
+        stubbed_names = sentence_transformers_loader.STUBBED_MODULES
+        leaf_names = [name.rsplit(".", 1)[-1] for name in stubbed_names]
+        saved_modules = {name: sys.modules.pop(name, None) for name in stubbed_names}
+        saved_attributes = {name: getattr(pyarrow, name, None) for name in leaf_names}
+        saved_had_attribute = {name: name in vars(pyarrow) for name in leaf_names}
+        finder = _BlockedPyarrowFinder()
+        sys.meta_path.insert(0, finder)
+        try:
+            with self.assertRaises(ImportError):
+                importlib.import_module("pyarrow.dataset")
+
+            installed_placeholder = (
+                sentence_transformers_loader.ensure_pyarrow_dataset_importable()
+            )
+
+            dataset = importlib.import_module("pyarrow.dataset")
+            self.assertFalse(installed_placeholder)
+            self.assertIsInstance(dataset, sentence_transformers_loader._PlaceholderModule)
+            self.assertIs(getattr(pyarrow, "dataset"), dataset)
+            self.assertIs(getattr(pyarrow, "_dataset"), sys.modules["pyarrow._dataset"])
+            # datasets annotates filters as Union[pds.Expression, list[tuple]],
+            # so a placeholder attribute has to be a usable class.
+            self.assertIsInstance(dataset.Expression, type)
+            self.assertIsNotNone(Optional[Union[dataset.Expression, list[tuple]]])
+            with self.assertRaises(AttributeError):
+                dataset.__wrapped__
+        finally:
+            sys.meta_path.remove(finder)
+            for name, module in saved_modules.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+            for name, attribute in saved_attributes.items():
+                if saved_had_attribute[name]:
+                    setattr(pyarrow, name, attribute)
+                else:
+                    vars(pyarrow).pop(name, None)
 
 
 class QdrantStoreTest(unittest.TestCase):

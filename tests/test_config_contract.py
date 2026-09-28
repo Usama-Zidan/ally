@@ -17,6 +17,16 @@ from config import (
     MAX_UPLOAD_BYTES,
     BM25_REBUILD_MIN_INTERVAL_SECONDS,
     TEXTRACT_S3_BUCKET,
+    QWEN_VLLM_BASE_URL,
+    QWEN_MODEL_NAME,
+    LLM_FALLBACK_MODEL,
+    LLM_MAX_RETRIES,
+    LLM_REQUEST_TIMEOUT_SECONDS,
+    CIRCUIT_BREAKER_FAIL_MAX,
+    CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS,
+    CHAT_RETRIEVAL_TOP_K,
+    CHAT_HISTORY_MAX_MESSAGES,
+    MONGO_DB_NAME,
     Settings,
 )
 
@@ -38,6 +48,25 @@ class ConfigContractTest(unittest.TestCase):
         self.assertGreater(MAX_UPLOAD_BYTES, 0)
         self.assertIsInstance(BM25_REBUILD_MIN_INTERVAL_SECONDS, float)
         self.assertIsInstance(TEXTRACT_S3_BUCKET, str)
+
+    def test_llm_gateway_and_chat_settings_are_wired(self):
+        self.assertIsInstance(QWEN_VLLM_BASE_URL, str)
+        self.assertIsInstance(QWEN_MODEL_NAME, str)
+        self.assertIsInstance(LLM_FALLBACK_MODEL, str)
+        self.assertIsInstance(LLM_MAX_RETRIES, int)
+        self.assertGreaterEqual(LLM_MAX_RETRIES, 0)
+        self.assertIsInstance(LLM_REQUEST_TIMEOUT_SECONDS, float)
+        self.assertGreater(LLM_REQUEST_TIMEOUT_SECONDS, 0)
+        self.assertIsInstance(CIRCUIT_BREAKER_FAIL_MAX, int)
+        self.assertGreater(CIRCUIT_BREAKER_FAIL_MAX, 0)
+        self.assertIsInstance(CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS, int)
+        self.assertGreater(CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS, 0)
+        self.assertIsInstance(CHAT_RETRIEVAL_TOP_K, int)
+        self.assertGreater(CHAT_RETRIEVAL_TOP_K, 0)
+        self.assertIsInstance(CHAT_HISTORY_MAX_MESSAGES, int)
+        self.assertGreater(CHAT_HISTORY_MAX_MESSAGES, 0)
+        self.assertIsInstance(MONGO_DB_NAME, str)
+        self.assertTrue(MONGO_DB_NAME)
 
     def test_settings_accept_valid_supported_urls(self):
         settings = self._settings(

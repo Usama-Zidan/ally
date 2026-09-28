@@ -1,4 +1,5 @@
 import unittest
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 from services.retrieval import backfill_index
@@ -54,6 +55,38 @@ class PersistChunksTest(unittest.IsolatedAsyncioTestCase):
 
 
 class IngestionActivityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_with_unstructured_falls_back_to_pypdf_on_import_error(self):
+        pypdf_module = ModuleType("pypdf")
+        setattr(
+            pypdf_module,
+            "PdfReader",
+            lambda _: SimpleNamespace(
+                pages=[
+                    SimpleNamespace(extract_text=lambda: "  First page text.  "),
+                    SimpleNamespace(extract_text=lambda: "Second page text."),
+                ]
+            ),
+        )
+
+        with patch.dict(
+            "sys.modules",
+            {"unstructured.partition.auto": None, "pypdf": pypdf_module},
+        ):
+            pages = await activities.extract_with_unstructured("policy.pdf")
+
+        self.assertEqual(
+            pages,
+            [
+                {"page_number": 1, "text": "First page text.", "category": "Text"},
+                {"page_number": 2, "text": "Second page text.", "category": "Text"},
+            ],
+        )
+
+    async def test_extract_with_unstructured_reraises_import_error_for_non_pdfs(self):
+        with patch.dict("sys.modules", {"unstructured.partition.auto": None}):
+            with self.assertRaises(ImportError):
+                await activities.extract_with_unstructured("policy.docx")
+
     async def test_detect_document_type_routes_images_and_pdf_text_layers(self):
         self.assertEqual(await activities.detect_document_type("scan.png", "scan.PNG"), "scanned")
 
@@ -225,6 +258,23 @@ class BackfillIndexTest(unittest.TestCase):
         print_message.assert_any_call(
             "Indexed 1 chunks into Qdrant and rebuilt the BM25 index."
         )
+
+    def test_main_still_rebuilds_bm25_when_postgres_has_no_chunks(self):
+        # An empty corpus is a valid state (e.g. right after infra
+        # bootstrap, before anything has been ingested) -- main() must
+        # still call index_chunks([]) and force a rebuild rather than
+        # short-circuiting, or a corpus that goes from N chunks to 0
+        # (every document deleted) would leave stale entries behind.
+        with patch.object(
+            backfill_index, "load_chunks_from_postgres", return_value=[]
+        ), patch.object(backfill_index, "index_chunks") as index_chunks, patch.object(
+            backfill_index, "rebuild_index_from_postgres"
+        ) as rebuild, patch("builtins.print") as print_message:
+            backfill_index.main()
+
+        index_chunks.assert_called_once_with([])
+        rebuild.assert_called_once_with(force=True)
+        print_message.assert_any_call("Indexed 0 chunks into Qdrant and rebuilt the BM25 index.")
 
 
 if __name__ == "__main__":

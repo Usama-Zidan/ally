@@ -194,6 +194,13 @@ def run_ragas_metrics(
 
     dataset = EvaluationDataset(samples=samples)
     evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini"))
+    # evaluator_llm = LangchainLLMWrapper(
+    #     ChatOpenAI(
+    #         model="Qwen/Qwen3-7B",
+    #         base_url="http://127.0.0.1:8001/v1", 
+    #         api_key="local"
+    #         )
+    #     )
     result = evaluate(
         dataset=dataset,
         metrics=[LLMContextPrecisionWithReference(), LLMContextRecall()],

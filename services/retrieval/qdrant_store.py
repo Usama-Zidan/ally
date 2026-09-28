@@ -62,6 +62,12 @@ def ensure_collection(client: QdrantClient | None = None) -> None:
         collection = client.get_collection(COLLECTION_NAME)
         vector_config = collection.config.params.vectors
         configured_size = getattr(vector_config, "size", None)
+        if isinstance(vector_config, dict):
+            raise RuntimeError(
+                f"Qdrant collection {COLLECTION_NAME!r} uses named vector "
+                f"configs {sorted(vector_config)!r}"
+            )
+        configured_size = getattr(vector_config, "size", None)
         if configured_size != VECTOR_SIZE:
             raise RuntimeError(
                 f"Qdrant collection {COLLECTION_NAME!r} has vector size "

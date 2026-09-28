@@ -10,11 +10,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import psycopg2
+import structlog
 from rank_bm25 import BM25Okapi
 
 from config import BM25_INDEX_PATH, BM25_REBUILD_MIN_INTERVAL_SECONDS, POSTGRES_DSN
 
-INDEX_PATH = Path(BM25_INDEX_PATH)
+log = structlog.get_logger()
+
+def _resolve_index_path(path: str | Path) -> Path:
+    index_path = Path(path)
+    return index_path / "bm25_index.pkl" if not index_path.name else index_path
+
+
+INDEX_PATH = _resolve_index_path(BM25_INDEX_PATH)
 # Rebuild bookkeeping lives next to the index itself: METADATA_PATH records
 # when the corpus was last actually rebuilt, DIRTY_MARKER_PATH records that
 # new chunks have been ingested since then but a rebuild was skipped by the
@@ -170,6 +178,7 @@ def _rebuild_now() -> BM25Index:
     index.build(docs)
     index.save()
     _record_rebuild(time.time())
+    log.info("bm25_index_rebuilt", chunks=len(docs), documents=len({d["filename"] for d in docs}))
     return index
 
 
@@ -196,6 +205,12 @@ def rebuild_index_from_postgres(force: bool = False) -> BM25Index | None:
     """
     if not force and time.time() - _last_rebuild_at() < BM25_REBUILD_MIN_INTERVAL_SECONDS:
         _mark_dirty()
+        log.warning(
+            "bm25_rebuild_skipped",
+            reason="debounce",
+            min_interval_seconds=BM25_REBUILD_MIN_INTERVAL_SECONDS,
+            note="lexical retrieval runs against a stale index until flush_if_dirty() runs",
+        )
         return None
     return _rebuild_now()
 
@@ -211,4 +226,5 @@ def flush_if_dirty() -> BM25Index | None:
     """
     if is_dirty():
         return _rebuild_now()
+    log.info("bm25_flush_skipped", reason="index is not dirty")
     return None

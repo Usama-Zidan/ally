@@ -215,6 +215,7 @@ class EndToEndRetrievalTest(unittest.TestCase):
     def test_reingestion_does_not_leave_orphaned_vectors(self):
         """Re-ingesting a shorter version of the same document must not
         leave the longer version's extra chunks retrievable."""
+        from services.retrieval import bm25_index
         from services.retrieval.pipeline import retrieve
         from workflows.activities import chunk_pages, embed_and_index, persist_chunks
 
@@ -225,6 +226,16 @@ class EndToEndRetrievalTest(unittest.TestCase):
         shorter_chunks = asyncio.run(chunk_pages(shorter_pages))
         asyncio.run(persist_chunks(shorter_chunks, self.filename, self.tenant_id))
         asyncio.run(embed_and_index(shorter_chunks, self.filename, self.tenant_id))
+
+        # embed_and_index's BM25 rebuild is debounced (see
+        # rebuild_index_from_postgres): two embed_and_index calls this close
+        # together only mark the index dirty on the second call rather than
+        # rebuilding it, so the in-memory/on-disk BM25 corpus still has page
+        # 2's now-deleted chunk in it. In production a periodic flusher (see
+        # flush_if_dirty/bm25_rebuild_worker.py) catches up shortly after;
+        # force that same catch-up here so this assertion isn't racing the
+        # debounce window.
+        bm25_index.flush_if_dirty()
 
         results = retrieve(
             "How long is the probation period for new employees?",

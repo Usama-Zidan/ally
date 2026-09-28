@@ -7,9 +7,11 @@
             "module": "uvicorn",
             "args": [
                 "services.api.main:app",
+                "--reload",
                 "--port",
                 "8000"
             ],
+            "justMyCode": false,
             "jinja": true,
             "console": "integratedTerminal"
         },
