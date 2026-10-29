@@ -26,6 +26,13 @@ def patch_auth():
     )
 
 
+def patch_rag_route():
+    """Keep chat endpoint tests focused on retrieval/streaming, not classification."""
+    return patch.object(
+        main, "route_message", new=AsyncMock(return_value={"route": "rag"})
+    )
+
+
 class TemporalProbe:
     def __init__(self, error: Exception | None = None):
         self.error = error
@@ -384,7 +391,7 @@ class ChatWebSocketTest(unittest.TestCase):
             main.chat_history, "append_turn"
         ) as append_turn, patch.object(
             main, "stream_chat_completion"
-        ) as stream_chat, TestClient(main.app) as client:
+        ) as stream_chat, patch_rag_route(), TestClient(main.app) as client:
             with self._connected_chat_client(client) as websocket:
                 websocket.receive_json()  # ready
                 websocket.send_text("What is the meaning of life?")
@@ -430,7 +437,7 @@ class ChatWebSocketTest(unittest.TestCase):
             main.chat_history, "append_turn"
         ) as append_turn, patch.object(
             main, "stream_chat_completion", side_effect=fake_stream
-        ), TestClient(main.app) as client:
+        ), patch_rag_route(), TestClient(main.app) as client:
             with self._connected_chat_client(client) as websocket:
                 websocket.receive_json()  # ready
                 websocket.send_text("How much leave do employees get?")
@@ -476,7 +483,7 @@ class ChatWebSocketTest(unittest.TestCase):
             main, "retrieve_async", new=AsyncMock(side_effect=RuntimeError("qdrant down"))
         ), patch.object(
             main.chat_history, "get_history", return_value=[]
-        ), TestClient(main.app) as client:
+        ), patch_rag_route(), TestClient(main.app) as client:
             with self._connected_chat_client(client) as websocket:
                 websocket.receive_json()  # ready
                 websocket.send_text("anything")
@@ -508,7 +515,7 @@ class ChatWebSocketTest(unittest.TestCase):
             main.chat_history, "append_turn"
         ) as append_turn, patch.object(
             main, "stream_chat_completion", side_effect=failing_stream
-        ), TestClient(main.app) as client:
+        ), patch_rag_route(), TestClient(main.app) as client:
             with self._connected_chat_client(client) as websocket:
                 websocket.receive_json()  # ready
                 websocket.send_text("question")
@@ -541,7 +548,7 @@ class ChatWebSocketTest(unittest.TestCase):
             main.chat_history, "append_turn"
         ), patch.object(
             main, "stream_chat_completion", side_effect=fake_stream
-        ), TestClient(main.app) as client:
+        ), patch_rag_route(), TestClient(main.app) as client:
             with self._connected_chat_client(client) as websocket:
                 websocket.receive_json()  # ready
                 websocket.send_text("question")
@@ -562,7 +569,7 @@ class ChatWebSocketTest(unittest.TestCase):
             main.chat_history, "get_history", return_value=[]
         ), patch.object(
             main.chat_history, "append_turn"
-        ) as append_turn, TestClient(main.app) as client:
+        ) as append_turn, patch_rag_route(), TestClient(main.app) as client:
             with self._connected_chat_client(client, "convo-1") as websocket:
                 websocket.receive_json()  # ready
                 websocket.send_text("hello")

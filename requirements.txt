@@ -5,6 +5,7 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 websockets==16.0
+cryptography==44.0.0
 pydantic==2.13.5
 httpx==0.28.1
 python-multipart==0.0.32
@@ -36,6 +37,7 @@ langchain-core==1.6.2
 langchain-community==0.4.1
 langchain-google-vertexai==3.2.4
 langgraph==1.2.11
+PyGetWindow==0.0.9
 
 # --- Caching / Storage ---
 redis==8.1.0

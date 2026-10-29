@@ -49,6 +49,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/001_document_chunks.sql:/docker-entrypoint-initdb.d/001_document_chunks.sql:ro
       - ./postgres/002_auth_and_tenancy.sql:/docker-entrypoint-initdb.d/002_auth_and_tenancy.sql:ro
+      - ./postgres/003_agent_integrations.sql:/docker-entrypoint-initdb.d/003_agent_integrations.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assistant -d assistant_db"]

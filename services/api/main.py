@@ -33,6 +33,8 @@ from config import (
     TEMPORAL_ADDRESS,
     UPLOAD_DIR,
 )
+from services.agent.graph import route_message
+from services.agent.pc_agent_bridge import bridge as pc_agent_bridge
 from services.auth.dependencies import get_current_tenant, get_current_tenant_ws
 from services.chat import history as chat_history
 from services.chat.condense import condense_query
@@ -259,6 +261,114 @@ async def chat_ws(websocket: WebSocket) -> None:
                 
             history = cast(list[dict], history)
 
+            # Phase 4: classify -> {tool, rag, conversational}. An explicit
+            # /tool.action command (services.agent.commands) bypasses the
+            # classifier entirely; otherwise the classifier only sees the
+            # raw message, not conversation history -- a known v1
+            # limitation (same category as query condensation before it
+            # was built): a follow-up like "do that again" won't resolve
+            # to a prior tool call. Worth revisiting if it turns out to
+            # matter in practice.
+            try:
+                route_state = await route_message(tenant_id, user_query)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("agent_routing_failed", tenant_id=tenant_id, error=str(exc))
+                await websocket.send_json(
+                    {"type": "error", "detail": "Could not process that message."}
+                )
+                continue
+
+            route = route_state["route"]
+
+            if route == "tool":
+                intent = route_state["intent"]
+                tool_error = route_state.get("tool_error")
+                if tool_error:
+                    await websocket.send_json({"type": "error", "detail": tool_error})
+                    continue
+
+                tool_result = route_state.get("tool_result")
+                if tool_result is None:
+                    log.warning(
+                        "agent_tool_missing_result",
+                        tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                    )
+                    await websocket.send_json(
+                        {"type": "error", "detail": "The requested action did not return a result."}
+                    )
+                    continue
+
+                await websocket.send_json(
+                    {
+                        "type": "tool_result",
+                        "tool": intent.tool_name,
+                        "action": intent.action,
+                        "success": tool_result.success,
+                        "summary": tool_result.summary,
+                        "details": tool_result.details,
+                    }
+                )
+                try:
+                    await run_in_threadpool(
+                        chat_history.append_turn, tenant_id, conversation_id, "user", user_query
+                    )
+                    await run_in_threadpool(
+                        chat_history.append_turn,
+                        tenant_id,
+                        conversation_id,
+                        "assistant",
+                        tool_result.summary,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "chat_history_write_failed",
+                        tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                        error=str(exc),
+                    )
+                continue
+
+            if route == "conversational":
+                # No document search for small talk -- condensation and
+                # retrieval are RAG-specific costs this path skips
+                # entirely, reusing the same streaming code as the RAG
+                # path below but with an empty sources list (prompt.
+                # build_messages already supports this: no "Sources:"
+                # block is added at all, see services/chat/prompt.py).
+                await websocket.send_json({"type": "sources", "sources": []})
+
+                answer_parts: list[str] = []
+                try:
+                    async for delta in stream_chat_completion(
+                        build_messages(history, [], user_query)
+                    ):
+                        answer_parts.append(delta)
+                        await websocket.send_json({"type": "token", "content": delta})
+                except LLMGatewayError as exc:
+                    log.warning("chat_generation_failed", tenant_id=tenant_id, error=str(exc))
+                    await websocket.send_json({"type": "error", "detail": str(exc)})
+                    continue
+
+                answer = "".join(answer_parts)
+                await websocket.send_json({"type": "done", "citations": []})
+                try:
+                    await run_in_threadpool(
+                        chat_history.append_turn, tenant_id, conversation_id, "user", user_query
+                    )
+                    await run_in_threadpool(
+                        chat_history.append_turn, tenant_id, conversation_id, "assistant", answer
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "chat_history_write_failed",
+                        tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                        error=str(exc),
+                    )
+                continue
+
+            # route == "rag": existing document-grounded flow, unchanged.
             # Retrieval-only rewrite: on a follow-up turn ("what about page
             # 2?"), the raw user_query is missing the context a bare vector/
             # BM25 search needs. condense_query resolves that using prior
@@ -363,3 +473,59 @@ async def chat_ws(websocket: WebSocket) -> None:
                 continue
     except WebSocketDisconnect:
         log.info("chat_ws_disconnected", tenant_id=tenant_id, conversation_id=conversation_id)
+
+
+@app.websocket("/ws/pc-agent")
+async def pc_agent_ws(websocket: WebSocket) -> None:
+    """Entry point for a local Windows companion agent (local_agent/).
+
+    The connection direction is inverted from every other integration in
+    this codebase: the agent runs on a machine the backend can't reach
+    directly (behind a home/office NAT), so it connects *out* to us and
+    stays connected -- see services.agent.pc_agent_bridge's module
+    docstring for the full rationale.
+
+    Handshake: immediately after connecting, the agent must send
+        {"type": "handshake", "capabilities": {"open_apps": bool,
+         "file_rw": bool, "shell_exec": bool, "mouse_keyboard_control": bool}}
+    reporting which capabilities it has enabled *locally* -- this, not
+    anything server-side, is the actual enforcement boundary (see
+    local_agent/README.md). Every message after that is a command result:
+        {"type": "result", "request_id": "...", "success": bool,
+         "details": {...}, "error": "..."}
+    correlated back to the LocalPCTool call that's awaiting it.
+
+    Only one PC agent connection is kept per tenant; a second one
+    replaces the first (see PCAgentBridge.register).
+    """
+    tenant_id = await get_current_tenant_ws(websocket.query_params.get("api_key"))
+    if tenant_id is None:
+        await websocket.close(code=1008, reason="Missing or invalid API key")
+        return
+
+    await websocket.accept()
+
+    try:
+        handshake = await websocket.receive_json()
+    except Exception:  # noqa: BLE001
+        await websocket.close(code=1003, reason="Expected a handshake message")
+        return
+
+    if handshake.get("type") != "handshake":
+        await websocket.close(code=1003, reason="First message must be a handshake")
+        return
+
+    capabilities = handshake.get("capabilities", {})
+    await pc_agent_bridge.register(tenant_id, websocket, capabilities)
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            if message.get("type") == "result":
+                await pc_agent_bridge.handle_result(tenant_id, message)
+            else:
+                log.warning("pc_agent_unknown_message_type", tenant_id=tenant_id, message=message)
+    except WebSocketDisconnect:
+        log.info("pc_agent_ws_disconnected", tenant_id=tenant_id)
+    finally:
+        pc_agent_bridge.unregister(tenant_id)

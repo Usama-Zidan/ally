@@ -1,50 +1,78 @@
 # Ally
 
-RAG platform over confidential documents + agentic layer that acts on external
-tools (Jira, Calendar, Drive), self-hosted LLM serving, hybrid retrieval, and
-full production observability.
+Multi-tenant RAG platform over confidential documents: OCR ingestion,
+hybrid (dense + lexical) retrieval, a self-hosted-first LLM gateway with
+streaming chat and page-level citations, and a LangGraph agent layer that
+routes between answering from documents and acting on external tools —
+Jira, Google Drive, Google Calendar, and the user's own PC via a local
+companion agent (Phases 0-4, built).
+
+Planned: semantic caching (Phase 5), topic clustering (Phase 6), and
+full tracing/observability (Phase 7).
 
 ## Stack
 
-| Concern              | Tool                                      |
-|-----------------------|--------------------------------------------|
-| Ingestion / OCR       | Unstructured.io, AWS Textract              |
-| Workflow orchestration| Temporal                                   |
-| Vector + hybrid search| Qdrant (dense + sparse)                    |
-| Reranking             | bge-reranker-v2 / Cohere Rerank            |
-| Retrieval eval        | Ragas (Recall@K, context precision)        |
-| LLM serving           | vLLM (Qwen3-7B)                            |
-| LLM routing/fallback  | LiteLLM                                    |
-| Agent orchestration   | LangGraph                                  |
-| Structured extraction | Instructor + Pydantic                      |
-| API                   | FastAPI (REST + WebSocket)                 |
-| Cache                 | Redis + RedisVL (semantic cache)           |
-| Chat history          | MongoDB                                    |
-| Chunk/metadata store  | Postgres                                   |
-| Topic clustering      | BERTopic (UMAP + HDBSCAN + c-TF-IDF)       |
-| Tracing/observability | Langfuse + OpenTelemetry                   |
-| Resilience            | Tenacity (retries), pybreaker (circuit breaker) |
+Reflects what's actually imported and running today. Each row links to
+the module that uses it.
+
+| Concern                | Tool                                         | Where |
+|-------------------------|-----------------------------------------------|-------|
+| Ingestion / OCR         | Unstructured.io, AWS Textract                 | `workflows/activities.py` |
+| Workflow orchestration  | Temporal                                      | `workflows/` |
+| Vector + hybrid search  | Qdrant (dense) + BM25 (`rank_bm25`), fused via RRF | `services/retrieval/` |
+| Reranking               | bge-reranker-v2 (cross-encoder)               | `services/retrieval/reranker.py` |
+| Retrieval eval          | Ragas (Recall@K, context precision/recall)    | `eval/run_ragas_eval.py` |
+| LLM serving             | vLLM (Qwen3), OpenAI-compatible               | `services/llm_gateway/router.py` |
+| LLM routing/fallback    | LiteLLM `Router`                              | `services/llm_gateway/router.py` |
+| Circuit breaking        | pybreaker                                      | `services/llm_gateway/router.py` |
+| Retries (transient DB)  | Tenacity                                       | `services/auth/api_keys.py` |
+| Agent orchestration     | LangGraph (`StateGraph`)                       | `services/agent/graph.py` |
+| Credential encryption   | `cryptography` (Fernet)                        | `services/agent/connected_accounts.py` |
+| API                     | FastAPI (REST + WebSocket)                     | `services/api/main.py` |
+| Chat history            | MongoDB                                        | `services/chat/history.py` |
+| Chunk/metadata/auth/vault | Postgres                                    | `infra/postgres/` |
+| Auth                    | API keys, SHA-256 hashed, per-tenant           | `services/auth/` |
+| Local PC control         | WebSocket bridge + standalone companion agent | `services/agent/pc_agent_bridge.py`, `local_agent/` |
+
+**Planned, not yet built** (Phases 5-7) — pinned in `requirements.txt`
+ahead of the work landing, not imported anywhere yet:
+
+| Concern              | Planned tool                              | Phase |
+|-----------------------|--------------------------------------------|-------|
+| Semantic/exact cache  | Redis + RedisVL                            | 5 |
+| Topic clustering      | BERTopic (UMAP + HDBSCAN + c-TF-IDF)       | 6 |
+| Tracing/observability | Langfuse + OpenTelemetry                   | 7 |
+
+**Deferred by design, not forgotten**: `instructor` is pinned but not
+adopted for Phase 4's intent classifier — its documented integration
+patterns assume direct access to `litellm`'s completion function or an
+OpenAI-SDK-shaped client, neither of which matches this project's
+`litellm.Router`-based gateway. See `services/agent/classifier.py`'s
+module docstring for the reasoning; the hand-rolled JSON parsing there
+has the same safe-fallback property Instructor would otherwise provide.
 
 ## Repo layout
 
 ```
 ally/
 ├── services/
-│   ├── ingestion/     # Temporal workflows + activities for OCR/ingest
-│   ├── retrieval/     # Qdrant hybrid search, reranking
-│   ├── chat/          # Prompt assembly w/ citations + MongoDB conversation history
-│   ├── llm_gateway/   # LiteLLM router: Qwen3 (primary) + OpenAI (fallback), circuit breaker
-│   ├── auth/          # Tenant provisioning + API key -> tenant resolution
-│   ├── agent/         # LangGraph graph: intent -> RAG node | tool node
-│   └── api/           # FastAPI app: REST + WebSocket chat
-├── workflows/         # Temporal workflow/worker entrypoints
-├── eval/              # Ragas eval sets + scripts (Recall@K, etc.)
-├── clustering/        # BERTopic pipeline
-├── infra/
-│   ├── docker-compose.yml
-│   └── postgres/      # Versioned SQL migrations
-└── observability/     # Langfuse/OTel config
+│   ├── retrieval/      # Qdrant + BM25 hybrid search, reranking, MMR 
+│   ├── llm_gateway/    # LiteLLM router: Qwen3 (primary) + OpenAI (fallback), circuit breaker
+│   ├── chat/           # Prompt building, query condensation, MongoDB conversation history 
+│   ├── auth/           # API-key auth, tenant resolution, tenant provisioning (Phase 2)
+│   ├── agent/          # LangGraph graph, classifier, tool registry, connected-accounts vault 
+│   ├── api/            # FastAPI app: REST + WebSocket chat + PC agent bridge endpoint
+│   └── ingestion/       # placeholder -- ingestion logic currently lives in workflows/activities.py
+├── local_agent/        # Standalone client: runs on the user's own PC, connects out via WebSocket 
+├── workflows/          # Temporal workflow/worker entrypoints + activities 
+├── eval/               # Ragas eval sets + scripts (Recall@K, etc.)
+└── infra/
+    ├── docker-compose.yml
+    └── postgres/       # SQL init scripts (chunks, tenancy/auth, agent integrations)
 ```
+
+`clustering/` (Phase 6) and `observability/` (Phase 7) directories will
+be added when those phases start — they don't exist yet, intentionally.
 
 ## Phase roadmap
 
@@ -52,7 +80,7 @@ ally/
 - [x] Phase 1 — Ingestion & OCR pipeline (Temporal + Unstructured/Textract)
 - [x] Phase 2 — Hybrid retrieval + Ragas eval, measured on a 121-document labeled corpus (Recall@5 table below)
 - [x] Phase 3 — LLM gateway + streaming chat with citations
-- [ ] Phase 4 — LangGraph agent layer (RAG vs. tool actions)
+- [x] Phase 4 — LangGraph agent layer (RAG vs. tool actions vs. local PC control)
 - [ ] Phase 5 — Semantic + exact-match caching
 - [ ] Phase 6 — BERTopic clustering
 - [ ] Phase 7 — Observability & hardening
@@ -189,6 +217,110 @@ using prior turns before it's used for search. This only affects
 the retrieval query; the LLM prompt still receives the original message
 and full history. Skipped on the first turn of a conversation, and fails
 open (falls back to the raw query) if the condensation call itself fails.
+
+## Agent layer: tools, commands, and the local PC agent (Phase 4)
+
+Every chat message now runs through `services/agent/graph.py` before
+anything else: a LangGraph `StateGraph` classifies the message into
+`rag` / `tool` / `conversational` and, for `tool`, executes it. The
+`rag`/`conversational` paths hand back to `chat_ws`, which streams the
+answer exactly as in Phase 3 (the second case is the same code path with
+an empty sources list — no document search for small talk).
+
+```
+message
+  -> /tool.action key=value ...?  -- explicit command, skip straight to dispatch
+  -> else: LLM classifier (services/agent/classifier.py) -> {rag, tool, conversational}
+  -> "tool": ToolRegistry.get(name).execute(tenant_id, action, params)
+  -> "rag" | "conversational": chat_ws streams as in Phase 3
+```
+
+### Explicit commands
+
+`/tool_name.action key=value key2="quoted value"` always bypasses the
+classifier — your own stated intent beats a model's guess, and it's the
+escape hatch when the classifier gets it wrong. See `services/agent/commands.py`.
+
+```
+/jira.create_ticket summary="Fix login bug" description="Users can't log in"
+/local_pc.open_app app_name=notepad
+/calendar.list_events start=2026-01-01 end=2026-01-31
+```
+
+### Tools (Jira, Drive, Calendar) — mocked, vault-ready
+
+`JiraTool`/`DriveTool`/`CalendarTool` return realistically-shaped mock
+responses (no real Atlassian/Google OAuth app exists yet) but the
+credential check is real: each one calls
+`services.agent.connected_accounts.get_connected_account()` and refuses
+to run if nothing is connected. Swapping in the real API later is a
+matter of replacing the mock body of each action with an actual HTTP
+call using the decrypted token — the classifier, the graph, and the chat
+protocol don't change.
+
+**Connected-accounts vault**: tokens are encrypted with Fernet
+(`cryptography`) before ever reaching Postgres — the `connected_accounts`
+table only stores ciphertext. Requires `CONNECTED_ACCOUNTS_ENCRYPTION_KEY`
+(generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
+Until a real OAuth flow exists, connect an account manually:
+
+```python
+from services.agent.connected_accounts import save_connected_account
+save_connected_account("<tenant-id>", "jira", access_token="...")
+```
+
+### Adding a new tool
+
+1. Subclass `Tool` (`services/agent/tools/base.py`), implement `execute()`.
+2. Register an instance in `services/agent/registry.py`.
+
+The classifier and the chat protocol pick it up automatically via
+`ToolRegistry.describe_for_classifier()` — no other file needs to change.
+
+### Local PC agent
+
+`local_pc` is different from the other three tools: instead of an
+outbound API call, the backend sends a command down a WebSocket the
+user's own machine opened *to* the backend (`/ws/pc-agent`), since the
+backend can't reach a device behind a home/office NAT directly. See
+`services/agent/pc_agent_bridge.py` for the connection/correlation
+registry and `local_agent/README.md` for setup.
+
+Four independently-toggleable capabilities, each gated on the local
+machine — **not** by the server, which cannot force a local machine to
+do anything its own operator hasn't allowed:
+
+| Capability | Risk |
+|---|---|
+| `open_apps` — launch apps, manage windows | Low |
+| `file_rw` — read/write files, restricted to `allowed_folders` | Low, if scoped tightly |
+| `shell_exec` — run arbitrary shell commands | **High** — no sandbox; every command is audit-logged locally |
+| `mouse_keyboard_control` — move mouse, click, type, press keys | **High** — can interact with anything visible on screen |
+
+Deliberately out of scope for v1: screenshots, clipboard access, system
+info. See `local_agent/README.md` for the full safety model, including
+why `shell_exec` has no command allowlist (a blocklist is not a real
+security boundary and a safe-enough allowlist wouldn't be useful).
+
+### Pluggable classifier
+
+`INTENT_CLASSIFIER` (default `llm`) selects the implementation in
+`services/agent/classifier.py`'s `_CLASSIFIERS` registry. A future
+custom-trained classifier ("JEV") is one new entry plus an env var
+change — the graph and the rest of the chat flow don't need to know
+which implementation is making the routing decision.
+
+### Known limitations
+
+- The classifier sees only the current message, not conversation
+  history — a follow-up like "do that again" won't resolve to a prior
+  tool call. Same category of limitation query condensation addressed
+  for RAG retrieval; not yet addressed here.
+- `PCAgentBridge`'s connection registry is in-process — works for a
+  single backend instance (where this project actually is today), would
+  need moving to shared state (e.g. Redis) to support horizontal scaling.
+- Only one PC agent connection is kept per tenant; a second one replaces
+  the first rather than supporting multiple paired devices.
 
 ## Benchmark corpus and retrieval numbers (Phase 2)
 

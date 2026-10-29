@@ -130,6 +130,26 @@ JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN", "")
 JIRA_EMAIL = os.getenv("JIRA_EMAIL", "")
 GOOGLE_CALENDAR_CREDENTIALS_JSON = os.getenv("GOOGLE_CALENDAR_CREDENTIALS_JSON", "")
 
+# --- Phase 4: agent layer ---
+
+# Fernet key (generate with `Fernet.generate_key()`) used to encrypt
+# connected-account OAuth tokens at rest. Required once any tool actually
+# stores real credentials; the vault refuses to encrypt/decrypt without it
+# rather than silently storing plaintext.
+CONNECTED_ACCOUNTS_ENCRYPTION_KEY = os.getenv("CONNECTED_ACCOUNTS_ENCRYPTION_KEY", "")
+
+# Which intent classifier implementation routes a message to RAG vs a
+# tool. "llm" (default) is a zero-shot classification call through the
+# existing LLM gateway. Swapping in a custom-trained classifier (e.g. the
+# user's own "JEV" model) later is a matter of registering a new
+# implementation under this name -- see services/agent/classifier.py.
+INTENT_CLASSIFIER = os.getenv("INTENT_CLASSIFIER", "llm")
+
+# How long the backend waits for a connected local PC agent to execute a
+# command and report a result before giving up and telling the user the
+# action timed out.
+PC_AGENT_COMMAND_TIMEOUT_SECONDS = float(os.getenv("PC_AGENT_COMMAND_TIMEOUT_SECONDS", "30"))
+
 # Keep AWS credential names available in the same import surface.
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
