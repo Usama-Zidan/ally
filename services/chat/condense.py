@@ -27,6 +27,19 @@ _MAX_TURNS = 6            # last 3 exchanges is plenty for reference resolution
 _ASSISTANT_CHARS = 150    # assistant turns only need to hint at the topic
 _MAX_OUTPUT_CHARS = 300   # a real rewritten question is short
 
+# Same /no_think rationale as services.agent.classifier: Qwen3 (this
+# project's default self-hosted model) opens every assistant turn with a
+# <think>...</think> block unless this literal string appears in the user
+# turn, and on a small model that reasoning phase can consume the entire
+# max_tokens budget before any visible output is emitted -- which is
+# exactly the empty-`raw` case query_condensation_degenerate below exists
+# to catch. Suppressing it up front avoids hitting that path on every turn.
+_NO_THINK_SUFFIX = "\n\n/no_think"
+# Raised from 128: too tight even for a short rewritten question once any
+# residual reasoning-token overhead is added on a backend that doesn't
+# fully honor /no_think.
+_CONDENSE_MAX_TOKENS = 256
+
 _CITATION_RE = re.compile(r"\s*\[\d+\]")
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
@@ -116,7 +129,7 @@ def _build_condense_messages(history: list[dict], user_query: str) -> list[dict]
             "content": (
                 f"<conversation>\n{_render_transcript(history)}\n</conversation>\n"
                 f"<latest_message>\n{user_query}\n</latest_message>\n"
-                "Output:"
+                "Output:" + _NO_THINK_SUFFIX
             ),
         },
     ]
@@ -168,7 +181,7 @@ async def condense_query(history: list[dict], user_query: str) -> str:
         parts = [
             delta
             async for delta in stream_chat_completion(
-                messages, temperature=0.0, max_tokens=128
+                messages, temperature=0.0, max_tokens=_CONDENSE_MAX_TOKENS
             )
         ]
     except LLMGatewayError as exc:

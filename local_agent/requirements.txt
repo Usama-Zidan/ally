@@ -1,0 +1,8 @@
+# Required for every configuration.
+websockets==16.0
+
+# Optional -- only needed if you enable the corresponding capability.
+# The agent degrades gracefully (a clear error, not a crash) if these
+# aren't installed and you try to use a capability that needs them.
+pygetwindow==0.0.9    # open_apps: list_windows / focus_window / close_window
+pyautogui==0.9.54     # mouse_keyboard_control
