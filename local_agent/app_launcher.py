@@ -19,6 +19,7 @@ Resolution order (first hit wins):
     5. a built-in website alias ("youtube" -> https://www.youtube.com)
     6. an executable on PATH ("cmd", "code")
     7. a fuzzy Start Menu match ("edge" -> "Microsoft Edge")
+    8. the top DuckDuckGo result for an unresolved name, after local approval
 Exact installed-app matches run before website aliases, and fuzzy ones run
 after, so "youtube" opens the website rather than a "YouTube Music" app
 that merely starts with the same word.
@@ -37,10 +38,12 @@ import shutil
 import subprocess
 import sys
 import webbrowser
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.request import Request, urlopen
 
-# Websites people say as if they were apps. Deliberately small: anything
-# else can be added per-user via "app_aliases" in config.json.
+# Common website names; unresolved names use local web search after this map.
 WEB_ALIASES: dict[str, str] = {
     "youtube": "https://www.youtube.com",
     "gmail": "https://mail.google.com",
@@ -81,6 +84,115 @@ _NOT_AN_APP_RE = re.compile(
 )
 
 _start_apps_cache: list[dict[str, str]] | None = None
+_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_SEARCH_RESPONSE_LIMIT = 1024 * 1024
+
+
+class _SearchResults(HTMLParser):
+    """Extract ordinary result links from DuckDuckGo's no-JavaScript page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._active_href: str | None = None
+        self._active_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        values = dict(attrs)
+        classes = (values.get("class") or "").split()
+        href = values.get("href")
+        if "result__a" in classes and href:
+            self._active_href = href
+            self._active_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._active_href is not None:
+            self._active_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a" or self._active_href is None:
+            return
+        title = " ".join("".join(self._active_text).split())
+        url = _unwrap_search_url(self._active_href)
+        if title and url:
+            self.results.append({"title": title[:512], "url": url[:2048]})
+        self._active_href = None
+        self._active_text = []
+
+
+def _unwrap_search_url(href: str) -> str | None:
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urlsplit(href)
+    if parsed.hostname and parsed.hostname.endswith("duckduckgo.com") and parsed.path == "/l/":
+        href = parse_qs(parsed.query).get("uddg", [""])[0]
+        parsed = urlsplit(href)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    return href
+
+
+def needs_web_search(target: str, aliases: dict[str, str] | None = None) -> bool:
+    """True when the target is not a known app, alias, path, or web address."""
+    name = (target or "").strip().strip('"').strip("'")
+    if not name:
+        return False
+    key = name.casefold()
+    if key in {alias.casefold() for alias in (aliases or {})}:
+        return False
+    if (
+        looks_like_url(name)
+        or os.path.exists(name)
+        or key in WEB_ALIASES
+        or shutil.which(name)
+    ):
+        return False
+    apps = list_start_apps()
+    return match_app(name, apps) is None
+
+
+def search_web(target: str) -> dict[str, str] | None:
+    """Search from the companion PC and return the top usable web result.
+
+    Search is read-only. The caller must show this candidate and obtain local
+    approval before opening it.
+    """
+    query = (target or "").strip()
+    if not query or len(query) > 512:
+        raise ValueError("Search query must be between 1 and 512 characters.")
+    request = Request(
+        _SEARCH_URL,
+        data=urlencode({"q": query}).encode("utf-8"),
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AllyLocalAgent/1.0",
+            "Accept": "text/html",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            body = response.read(_SEARCH_RESPONSE_LIMIT + 1)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("Local web search failed. Check this PC's internet connection.") from exc
+    if len(body) > _SEARCH_RESPONSE_LIMIT:
+        raise RuntimeError("Local web search response exceeded its size limit.")
+    parser = _SearchResults()
+    parser.feed(body.decode("utf-8", errors="replace"))
+    return parser.results[0] if parser.results else None
+
+
+def open_search_result(query: str, result: dict[str, str]) -> dict[str, Any]:
+    url = _unwrap_search_url(result.get("url", ""))
+    title = result.get("title", "").strip()
+    if not title or not url:
+        raise ValueError("The selected search result is invalid.")
+    webbrowser.open(url)
+    return {"launched": url, "title": title, "search_query": query, "method": "web_search"}
 
 
 def _is_windows() -> bool:

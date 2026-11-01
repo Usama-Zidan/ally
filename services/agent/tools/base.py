@@ -10,11 +10,14 @@ Adding a new tool:
 That's it -- the classifier learns about it from `describe()`, and
 services.agent.graph dispatches to it by name automatically.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+from services.auth.principal import AuthorizationDenied, Principal, authorize_tool
 
 
 @dataclass
@@ -26,6 +29,10 @@ class ToolResult:
     success: bool
     summary: str
     details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.details.get("mocked") is True:
+            self.summary = f"[SIMULATED] {self.summary}"
 
 
 class ToolError(Exception):
@@ -100,3 +107,18 @@ class ToolRegistry:
             actions = ", ".join(tool.actions)
             lines.append(f"- {tool.name}: {tool.description} (actions: {actions})")
         return "\n".join(lines)
+
+    def describe_for_principal(self, principal: Principal) -> str:
+        """Describe only permitted actions, without probing unauthorized accounts."""
+        lines = []
+        for tool in self._tools.values():
+            actions = []
+            for action in tool.actions:
+                try:
+                    authorize_tool(principal, principal.tenant_id, tool.name, action)
+                except AuthorizationDenied:
+                    continue
+                actions.append(action)
+            if actions and tool.is_available(principal.tenant_id):
+                lines.append(f"- {tool.name}: {tool.description} (actions: {', '.join(actions)})")
+        return "\n".join(lines) or "(no tools are authorized and connected for this credential)"

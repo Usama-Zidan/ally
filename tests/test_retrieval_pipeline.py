@@ -6,6 +6,9 @@ from unittest.mock import Mock, patch
 
 from services.retrieval import pipeline
 from services.retrieval.bm25_index import BM25Index
+from services.retrieval import model_runtime
+from services.retrieval.model_loading import ModelInferenceRejected
+from services.retrieval.model_runtime import RetrievalModels
 
 
 class RetrievalPipelineTest(unittest.TestCase):
@@ -25,17 +28,14 @@ class RetrievalPipelineTest(unittest.TestCase):
         bm25_index.search.return_value = lexical
         metadata_filter = {"filename": "policy.pdf"}
 
-        with patch.object(pipeline, "dense_search", return_value=dense) as dense_search, patch.object(
-            pipeline, "_get_bm25_index", return_value=bm25_index
-        ), patch.object(
-            pipeline, "reciprocal_rank_fusion", return_value=fused
-        ) as fusion, patch.object(
-            pipeline, "rerank", return_value=reranked
-        ) as rerank, patch.object(
-            pipeline, "embed_query", return_value=[0.25, 0.75]
-        ) as embed_query, patch.object(
-            pipeline, "mmr_select", return_value=final
-        ) as mmr_select:
+        with (
+            patch.object(pipeline, "dense_search", return_value=dense) as dense_search,
+            patch.object(pipeline, "_get_bm25_index", return_value=bm25_index),
+            patch.object(pipeline, "reciprocal_rank_fusion", return_value=fused) as fusion,
+            patch.object(pipeline, "rerank", return_value=reranked) as rerank,
+            patch.object(pipeline, "embed_query", return_value=[0.25, 0.75]) as embed_query,
+            patch.object(pipeline, "mmr_select", return_value=final) as mmr_select,
+        ):
             result = pipeline.retrieve(
                 "annual leave",
                 "tenant-a",
@@ -56,17 +56,52 @@ class RetrievalPipelineTest(unittest.TestCase):
         embed_query.assert_called_once_with("annual leave")
         mmr_select.assert_called_once_with([0.25, 0.75], reranked, top_k=2)
 
+    def test_configured_models_are_used_by_dense_rerank_and_mmr_stages(self):
+        models = RetrievalModels("app-embedding", "app-reranker")
+        store = Mock()
+        candidates = [{"id": "candidate", "text": "passage"}]
+        final = [{"id": "final", "text": "passage"}]
+        with (
+            patch.object(pipeline, "dense_search", return_value=candidates) as dense_search,
+            patch.object(model_runtime, "rerank", return_value=candidates) as rerank,
+            patch.object(model_runtime, "embed_query", return_value=[0.1, 0.9]) as embed_query,
+            patch.object(pipeline, "mmr_select", return_value=final) as mmr_select,
+        ):
+            result = pipeline.retrieve(
+                "query",
+                "tenant-a",
+                top_k=1,
+                use_bm25=False,
+                qdrant_store=store,
+                retrieval_models=models,
+            )
+
+        self.assertEqual(result, final)
+        dense_search.assert_called_once_with(
+            "query",
+            "tenant-a",
+            top_k=20,
+            metadata_filter=None,
+            store=store,
+            embedding_model="app-embedding",
+        )
+        rerank.assert_called_once_with("query", candidates, top_k=1, model_name="app-reranker")
+        embed_query.assert_called_once_with("query", model_name="app-embedding")
+        mmr_select.assert_called_once_with([0.1, 0.9], candidates, top_k=1)
+
     def test_disabled_optional_stages_return_dense_results_directly(self):
         dense = [
             {"id": "one", "text": "one"},
             {"id": "two", "text": "two"},
             {"id": "three", "text": "three"},
         ]
-        with patch.object(pipeline, "dense_search", return_value=dense), patch.object(
-            pipeline, "_get_bm25_index"
-        ) as get_bm25, patch.object(pipeline, "rerank") as rerank, patch.object(
-            pipeline, "embed_query"
-        ) as embed_query, patch.object(pipeline, "mmr_select") as mmr_select:
+        with (
+            patch.object(pipeline, "dense_search", return_value=dense),
+            patch.object(pipeline, "_get_bm25_index") as get_bm25,
+            patch.object(pipeline, "rerank") as rerank,
+            patch.object(pipeline, "embed_query") as embed_query,
+            patch.object(pipeline, "mmr_select") as mmr_select,
+        ):
             result = pipeline.retrieve(
                 "query",
                 "tenant-a",
@@ -85,12 +120,13 @@ class RetrievalPipelineTest(unittest.TestCase):
 
     def test_bm25_failure_falls_back_to_dense_results(self):
         dense = [{"id": "one", "text": "one"}, {"id": "two", "text": "two"}]
-        with patch.object(pipeline, "dense_search", return_value=dense), patch.object(
-            pipeline, "_get_bm25_index", side_effect=OSError("missing")
-        ), patch.object(pipeline, "reciprocal_rank_fusion") as fusion:
+        with (
+            patch.object(pipeline, "dense_search", return_value=dense),
+            patch.object(pipeline, "_get_bm25_index", side_effect=OSError("missing")),
+            patch.object(pipeline, "reciprocal_rank_fusion") as fusion,
+        ):
             result = pipeline.retrieve(
-                "query",
-                "tenant-a", top_k=1, use_rerank=False, use_mmr=False
+                "query", "tenant-a", top_k=1, use_rerank=False, use_mmr=False
             )
 
         self.assertEqual(result, dense[:1])
@@ -100,12 +136,13 @@ class RetrievalPipelineTest(unittest.TestCase):
         lexical = [{"id": "lexical", "text": "lexical"}]
         bm25_index = Mock()
         bm25_index.search.return_value = lexical
-        with patch.object(pipeline, "dense_search", return_value=[]), patch.object(
-            pipeline, "_get_bm25_index", return_value=bm25_index
-        ), patch.object(pipeline, "reciprocal_rank_fusion") as fusion:
+        with (
+            patch.object(pipeline, "dense_search", return_value=[]),
+            patch.object(pipeline, "_get_bm25_index", return_value=bm25_index),
+            patch.object(pipeline, "reciprocal_rank_fusion") as fusion,
+        ):
             result = pipeline.retrieve(
-                "query",
-                "tenant-a", top_k=1, use_rerank=False, use_mmr=False
+                "query", "tenant-a", top_k=1, use_rerank=False, use_mmr=False
             )
 
         self.assertEqual(result, lexical)
@@ -117,8 +154,9 @@ class RetrievalPipelineTest(unittest.TestCase):
             {"id": "two", "text": "two"},
             {"id": "three", "text": "three"},
         ]
-        with patch.object(pipeline, "dense_search", return_value=fused), patch.object(
-            pipeline, "rerank", side_effect=RuntimeError("model unavailable")
+        with (
+            patch.object(pipeline, "dense_search", return_value=fused),
+            patch.object(pipeline, "rerank", side_effect=RuntimeError("model unavailable")),
         ):
             result = pipeline.retrieve(
                 "query",
@@ -131,18 +169,36 @@ class RetrievalPipelineTest(unittest.TestCase):
 
         self.assertEqual(result, fused[:2])
 
+    def test_reranker_admission_rejection_is_not_hidden_by_fallback(self):
+        with (
+            patch.object(pipeline, "dense_search", return_value=[{"text": "candidate"}]),
+            patch.object(pipeline, "rerank", side_effect=ModelInferenceRejected("busy")),
+        ):
+            with self.assertRaises(ModelInferenceRejected):
+                pipeline.retrieve("query", "tenant-a", top_k=1, use_bm25=False, use_mmr=False)
+
     def test_mmr_failure_falls_back_to_reranked_order(self):
         dense = [{"id": "dense", "text": "dense"}]
         reranked = [{"id": "reranked", "text": "reranked"}]
-        with patch.object(pipeline, "dense_search", return_value=dense), patch.object(
-            pipeline, "rerank", return_value=reranked
-        ), patch.object(pipeline, "embed_query", side_effect=RuntimeError("model unavailable")), patch.object(
-            pipeline, "mmr_select"
-        ) as mmr_select:
+        with (
+            patch.object(pipeline, "dense_search", return_value=dense),
+            patch.object(pipeline, "rerank", return_value=reranked),
+            patch.object(pipeline, "embed_query", side_effect=RuntimeError("model unavailable")),
+            patch.object(pipeline, "mmr_select") as mmr_select,
+        ):
             result = pipeline.retrieve("query", "tenant-a", top_k=1, use_bm25=False)
 
         self.assertEqual(result, reranked)
         mmr_select.assert_not_called()
+
+    def test_mmr_admission_rejection_is_not_hidden_by_fallback(self):
+        with (
+            patch.object(pipeline, "dense_search", return_value=[{"text": "candidate"}]),
+            patch.object(pipeline, "rerank", return_value=[{"text": "candidate"}]),
+            patch.object(pipeline, "embed_query", side_effect=ModelInferenceRejected("busy")),
+        ):
+            with self.assertRaises(ModelInferenceRejected):
+                pipeline.retrieve("query", "tenant-a", top_k=1, use_bm25=False)
 
     def test_bm25_cache_reuses_unchanged_index_and_reloads_new_mtime(self):
         first = BM25Index()
@@ -151,9 +207,10 @@ class RetrievalPipelineTest(unittest.TestCase):
             index_path = Path(directory, "bm25.pkl")
             index_path.write_bytes(b"placeholder")
             initial_mtime = index_path.stat().st_mtime_ns
-            with patch.object(pipeline, "INDEX_PATH", index_path), patch.object(
-                pipeline.BM25Index, "load", side_effect=[first, second]
-            ) as load:
+            with (
+                patch.object(pipeline, "INDEX_PATH", index_path),
+                patch.object(pipeline.BM25Index, "load", side_effect=[first, second]) as load,
+            ):
                 self.assertIs(pipeline._get_bm25_index(), first)
                 self.assertIs(pipeline._get_bm25_index(), first)
                 os.utime(index_path, ns=(initial_mtime + 1_000_000, initial_mtime + 1_000_000))
@@ -162,8 +219,9 @@ class RetrievalPipelineTest(unittest.TestCase):
         self.assertEqual(load.call_count, 2)
 
     def test_bm25_cache_reports_actionable_error_when_index_is_missing(self):
-        with TemporaryDirectory() as directory, patch.object(
-            pipeline, "INDEX_PATH", Path(directory, "missing.pkl")
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(pipeline, "INDEX_PATH", Path(directory, "missing.pkl")),
         ):
             with self.assertRaisesRegex(RuntimeError, "rebuild_index_from_postgres"):
                 pipeline._get_bm25_index()

@@ -11,11 +11,17 @@ SYSTEM_PROMPT = (
     "numbered sources provided with each question. Follow these rules "
     "strictly:\n"
     "1. Answer only using information present in the sources below.\n"
-    "2. Every claim you make must be followed by a citation marker like "
-    "[1] or [2] referencing the source number it came from.\n"
+    "2. Every claim based on document sources must be followed by a citation marker like "
+    "[1] or [2] referencing the source number it came from; local PC policy facts in rule 5 "
+    "do not need citations when no sources are supplied.\n"
     "3. If the sources do not contain enough information to answer, say "
     "so plainly instead of guessing or using outside knowledge.\n"
-    "4. Keep answers concise and directly responsive to the question."
+    "4. Keep answers concise and directly responsive to the question.\n"
+    "5. For local PC access questions, you may answer from this application rule even "
+    "without document sources: file reads/listings are limited to folders configured in "
+    "local_agent/config.json under allowed_folders, and require file_rw to be enabled. "
+    "You do not know the configured paths unless provided. Ask for a path inside an "
+    "allowed folder to list its files."
 )
 
 NO_CONTEXT_MESSAGE = (

@@ -17,7 +17,7 @@ the module that uses it.
 
 | Concern                | Tool                                         | Where |
 |-------------------------|-----------------------------------------------|-------|
-| Ingestion / OCR         | Unstructured.io, AWS Textract                 | `workflows/activities.py` |
+| Ingestion / OCR         | Upload/storage adapters plus Temporal activities (Unstructured.io, AWS Textract) | `services/ingestion/`, `workflows/activities.py` |
 | Workflow orchestration  | Temporal                                      | `workflows/` |
 | Vector + hybrid search  | Qdrant (dense) + BM25 (`rank_bm25`), fused via RRF | `services/retrieval/` |
 | Reranking               | bge-reranker-v2 (cross-encoder)               | `services/retrieval/reranker.py` |
@@ -29,7 +29,7 @@ the module that uses it.
 | Agent orchestration     | LangGraph (`StateGraph`)                       | `services/agent/graph.py` |
 | Credential encryption   | `cryptography` (Fernet)                        | `services/agent/connected_accounts.py` |
 | API                     | FastAPI (REST + WebSocket)                     | `services/api/main.py` |
-| Chat history            | MongoDB                                        | `services/chat/history.py` |
+| Chat history            | MongoDB                                        | `services/chat/mongo_history.py` |
 | Chunk/metadata/auth/vault | Postgres                                    | `infra/postgres/` |
 | Auth                    | API keys, SHA-256 hashed, per-tenant           | `services/auth/` |
 | Local PC control         | WebSocket bridge + standalone companion agent | `services/agent/pc_agent_bridge.py`, `local_agent/` |
@@ -62,7 +62,7 @@ ally/
 │   ├── auth/           # API-key auth, tenant resolution, tenant provisioning (Phase 2)
 │   ├── agent/          # LangGraph graph, classifier, tool registry, connected-accounts vault 
 │   ├── api/            # FastAPI app: REST + WebSocket chat + PC agent bridge endpoint
-│   └── ingestion/       # placeholder -- ingestion logic currently lives in workflows/activities.py
+│   └── ingestion/        # upload use case and local/S3 artifact storage
 ├── local_agent/        # Standalone client: runs on the user's own PC, connects out via WebSocket 
 ├── workflows/          # Temporal workflow/worker entrypoints + activities 
 ├── eval/               # Ragas eval sets + scripts (Recall@K, etc.)
@@ -106,11 +106,14 @@ docker compose up -d
 cd ..
 pip install -r requirements.txt
 
+# Migrate a backed-up/restored-copy-rehearsed database before using the new auth schema
+python -m alembic upgrade head
+
 # 4. Provision a tenant and API key (all endpoints require one)
 #    Prints the raw key once -- it is stored only as a SHA-256 hash.
 python -m services.auth.provision_tenant create "My Org"
 
-# 5. Backfill Phase 2 indexes for existing Postgres chunks
+# 5. Backfill legacy document_chunks rows into Qdrant and BM25
 python services/retrieval/backfill_index.py
 
 # 6. Run the API
@@ -131,8 +134,9 @@ Every document and chunk belongs to a tenant. Callers authenticate with an
 API key, which resolves to the tenant that owns the data:
 
 - REST: `X-API-Key: ally_...`
-- WebSocket: `/ws/chat?api_key=ally_...` (browsers cannot set custom
-  headers during the WebSocket handshake)
+- Native WebSocket clients: `X-API-Key` header.
+- Browsers: obtain an authenticated single-use ticket via `POST /auth/ws-tickets`,
+  then connect to `/ws/chat?ticket=...`. Production rejects query API keys.
 
 `tenant_id` is a required argument on `retrieve()`, `dense_search()`, and
 `BM25Index.search()` -- not an optional filter -- so tenant scoping cannot
@@ -150,19 +154,19 @@ curl -X POST http://localhost:8000/documents/upload \
 
 The primary model is served over an OpenAI-compatible HTTP API, so any
 server works. Set `QWEN_VLLM_BASE_URL` to point at it (default
-`http://127.0.0.1:8001/v1`) and `QWEN_MODEL_NAME` to the model id that
+`http://127.0.0.1:8002/v1`) and `QWEN_MODEL_NAME` to the model id that
 server reports.
 
 With vLLM (production, GPU):
 
 ```bash
-vllm serve Qwen/Qwen3-7B --port 8001
+vllm serve Qwen/Qwen3-7B --port 8002
 ```
 
 With `llama.cpp` (flags depend on your hardware):
 
 ```bash
-llama-server -hf Qwen/Qwen3-7B --port 8001 -c <context window> -np 1 -dev Vulkan1 -ngl 28
+llama-server -hf Qwen/Qwen3-7B --port 8002 -c <context window> -np 1 -dev Vulkan1 -ngl 28
 ```
 
 `/ws/chat` runs retrieve -> build prompt -> stream -> persist history on
@@ -175,7 +179,7 @@ user message
    -> build_messages(history, sources, query)                        [services/chat/prompt.py]
    -> stream_chat_completion(messages)                                [services/llm_gateway/router.py]
    -> tokens streamed to the client as they arrive                   [{"type": "token", ...}]
-   -> full answer + user turn persisted                              [services/chat/history.py]
+   -> user + full answer atomically persisted                        [services/chat/mongo_history.py]
    -> {"type": "done", "citations": sources}
 ```
 
@@ -204,11 +208,15 @@ the model to answer from outside training knowledge despite
 the system prompt, and a known-empty-context answer doesn't need to be 
 generated to know what it should say.
 
-**Conversation history** (`services/chat/history.py`): stored in
-MongoDB, scoped by `(tenant_id, conversation_id)`, trimmed to the last
-`CHAT_HISTORY_MAX_MESSAGES` via an atomic `$push`/`$slice` rather than a
-read-modify-write. A WebSocket connection gets a fresh `conversation_id`
-unless the client passes `?conversation_id=...` to resume one.
+**Conversation history** (`services/chat/mongo_history.py`): an injected,
+lifespan-owned Mongo adapter stores each user/assistant exchange in one atomic
+`$push`/`$each`/`$slice`, scoped by `(tenant_id, conversation_id)`. The even
+`CHAT_HISTORY_MAX_MESSAGES` limit retains complete new pairs. `done` follows
+acknowledged saving; an unconfirmed acknowledgement returns
+`history_write_unconfirmed`, because the pair may already be stored. Tool action
+outcome is separate from `history_status`; never repeat an action just to repair
+history. Legacy helpers remain in `services/chat/history.py`. A WebSocket gets a
+fresh `conversation_id` unless the client passes `?conversation_id=...` to resume.
 
 **Follow-up turns queries**: Follow-up turns are condensed into 
 a standalone retrieval query before hitting Qdrant/BM25 
@@ -369,8 +377,11 @@ RUN_INTEGRATION_TESTS=1 python -m unittest discover -s tests -p "test_integratio
 ## Environment variables
 
 Copy `.env.example` to `.env` and fill in:
+
+Configuration is validated as an immutable process snapshot. Set variables before
+starting each process and restart to apply changes.
 - `PROJECT_NAME` (defaults to `Ally`)
-- `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `EMBEDDING_MODEL`
+- `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `EMBEDDING_MODEL`, `RERANKER_MODEL`
 - `POSTGRES_DSN`, `MONGO_URI`, `MONGO_DB_NAME`, `REDIS_URL`, `TEMPORAL_ADDRESS`
 - `BM25_INDEX_PATH`, `BM25_REBUILD_MIN_INTERVAL_SECONDS`
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` / `TEXTRACT_S3_BUCKET` (for Textract)

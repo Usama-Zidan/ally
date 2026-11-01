@@ -1,12 +1,16 @@
 import importlib
 import sys
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, Union
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
+from pydantic import SecretStr
 from qdrant_client.models import Distance
 
 from services.retrieval import (
@@ -23,6 +27,7 @@ from services.retrieval.bm25_index import (
 )
 from services.retrieval.fusion import reciprocal_rank_fusion
 from services.retrieval.qdrant_store import Chunk
+from services.runtime.settings import load_runtime_settings
 
 
 class _BlockedPyarrowFinder:
@@ -47,26 +52,38 @@ class BM25IndexTest(unittest.TestCase):
         index = BM25Index()
         index.build(
             [
-                {"id": "match", "text": "Annual-leave policy", "filename": "hr.pdf",
- "tenant_id": "tenant-a",
+                {
+                    "id": "match",
+                    "text": "Annual-leave policy",
+                    "filename": "hr.pdf",
+                    "tenant_id": "tenant-a",
                 },
-                {"id": "other", "text": "Security handbook", "filename": "it.pdf",
- "tenant_id": "tenant-a",
+                {
+                    "id": "other",
+                    "text": "Security handbook",
+                    "filename": "it.pdf",
+                    "tenant_id": "tenant-a",
                 },
             ]
         )
 
-        self.assertEqual([item["id"] for item in index.search("ANNUAL, leave!", "tenant-a")], ["match"])
+        self.assertEqual(
+            [item["id"] for item in index.search("ANNUAL, leave!", "tenant-a")], ["match"]
+        )
 
     def test_search_uses_document_id_as_stable_tie_breaker(self):
         index = BM25Index()
         index.build(
             [
-                {"id": "b", "text": "same term",
- "tenant_id": "tenant-a",
+                {
+                    "id": "b",
+                    "text": "same term",
+                    "tenant_id": "tenant-a",
                 },
-                {"id": "a", "text": "same term",
- "tenant_id": "tenant-a",
+                {
+                    "id": "a",
+                    "text": "same term",
+                    "tenant_id": "tenant-a",
                 },
             ]
         )
@@ -75,9 +92,15 @@ class BM25IndexTest(unittest.TestCase):
 
     def test_search_rejects_non_positive_limit_and_ignores_blank_query(self):
         index = BM25Index()
-        index.build([{"id": "one", "text": "annual leave",
- "tenant_id": "tenant-a",
-                },])
+        index.build(
+            [
+                {
+                    "id": "one",
+                    "text": "annual leave",
+                    "tenant_id": "tenant-a",
+                },
+            ]
+        )
 
         with self.assertRaisesRegex(ValueError, "top_k"):
             index.search("annual", "tenant-a", top_k=0)
@@ -87,17 +110,26 @@ class BM25IndexTest(unittest.TestCase):
         index = BM25Index()
         index.build(
             [
-                {"id": "page-1", "text": "annual leave", "filename": "hr.pdf", "page_number": 1,
- "tenant_id": "tenant-a",
+                {
+                    "id": "page-1",
+                    "text": "annual leave",
+                    "filename": "hr.pdf",
+                    "page_number": 1,
+                    "tenant_id": "tenant-a",
                 },
-                {"id": "page-2", "text": "annual leave", "filename": "hr.pdf", "page_number": 2,
- "tenant_id": "tenant-a",
+                {
+                    "id": "page-2",
+                    "text": "annual leave",
+                    "filename": "hr.pdf",
+                    "page_number": 2,
+                    "tenant_id": "tenant-a",
                 },
             ]
         )
 
         results = index.search(
-            "annual leave", "tenant-a",
+            "annual leave",
+            "tenant-a",
             metadata_filter={"filename": "hr.pdf", "page_number": 2},
         )
 
@@ -106,19 +138,25 @@ class BM25IndexTest(unittest.TestCase):
     def test_rebuild_index_reads_ordered_rows_and_closes_connection(self):
         connection = MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [("tenant-a", "policy.pdf", 2, 3, "annual leave")]
+        cursor.fetchall.return_value = [("tenant-a", "policy.pdf", 2, 3, "annual leave", None)]
 
-        with patch(
-            "services.retrieval.bm25_index.psycopg2.connect",
-            return_value=connection,
-        ) as connect, patch.object(BM25Index, "save") as save, patch.dict(
-            "os.environ", {"POSTGRES_DSN": "postgresql://override/test"}
+        with (
+            patch(
+                "services.retrieval.bm25_index.psycopg2.connect",
+                return_value=connection,
+            ) as connect,
+            patch.object(BM25Index, "save") as save,
+            patch("services.retrieval.bm25_index.POSTGRES_DSN", "postgresql://override/test"),
+            patch.dict("os.environ", {"POSTGRES_DSN": "postgresql://later-env/ignored"}),
         ):
             index = rebuild_index_from_postgres(force=True)
 
         connect.assert_called_once_with("postgresql://override/test")
         cursor.execute.assert_called_once()
-        self.assertIn("ORDER BY tenant_id, filename, page_number, chunk_index", cursor.execute.call_args.args[0])
+        self.assertIn(
+            "ORDER BY tenant_id, filename, page_number, chunk_index",
+            cursor.execute.call_args.args[0],
+        )
         if index is None:
             self.fail("rebuild_index_from_postgres() returned None")
         self.assertEqual(index.doc_metadata[0]["filename"], "policy.pdf")
@@ -131,14 +169,25 @@ class FusionTest(unittest.TestCase):
     def test_fusion_accumulates_reciprocal_rank_scores_and_preserves_first_payload(self):
         fused = reciprocal_rank_fusion(
             [
-                [{"id": "shared", "text": "dense",
- "tenant_id": "tenant-a",
-                }, {"id": "dense", "text": "only",
- "tenant_id": "tenant-a",
-                },],
-                [{"id": "shared", "text": "lexical",
- "tenant_id": "tenant-a",
-                },],
+                [
+                    {
+                        "id": "shared",
+                        "text": "dense",
+                        "tenant_id": "tenant-a",
+                    },
+                    {
+                        "id": "dense",
+                        "text": "only",
+                        "tenant_id": "tenant-a",
+                    },
+                ],
+                [
+                    {
+                        "id": "shared",
+                        "text": "lexical",
+                        "tenant_id": "tenant-a",
+                    },
+                ],
             ],
             k=10,
         )
@@ -183,19 +232,82 @@ class EmbeddingTest(unittest.TestCase):
             show_progress_bar=False,
         )
 
+    def test_concurrent_cold_calls_construct_one_embedding_model(self):
+        barrier = Barrier(2)
+        model = Mock()
+        constructor = Mock(side_effect=lambda _name: (time.sleep(0.05), model)[1])
+        embeddings._load_model.cache_clear()
+
+        def load_model():
+            barrier.wait(timeout=2)
+            return embeddings._get_model("concurrent-model")
+
+        with (
+            patch.object(
+                embeddings,
+                "load_sentence_transformers",
+                return_value=SimpleNamespace(SentenceTransformer=constructor),
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            results = list(executor.map(lambda _index: load_model(), range(2)))
+
+        self.assertIs(results[0], model)
+        self.assertIs(results[1], model)
+        constructor.assert_called_once_with("concurrent-model")
+
+    def test_concurrent_apps_with_different_models_keep_their_selected_weights(self):
+        barrier = Barrier(2)
+        models = {"app-a-model": Mock(), "app-b-model": Mock()}
+        constructor = Mock(side_effect=models.__getitem__)
+        embeddings._load_model.cache_clear()
+
+        def load_for_app(model_name: str):
+            barrier.wait(timeout=2)
+            return embeddings._get_model(model_name)
+
+        try:
+            with (
+                patch.object(
+                    embeddings,
+                    "load_sentence_transformers",
+                    return_value=SimpleNamespace(SentenceTransformer=constructor),
+                ),
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                app_a = executor.submit(load_for_app, "app-a-model")
+                app_b = executor.submit(load_for_app, "app-b-model")
+
+                self.assertIs(app_a.result(timeout=2), models["app-a-model"])
+                self.assertIs(app_b.result(timeout=2), models["app-b-model"])
+
+            self.assertCountEqual(
+                [call.args[0] for call in constructor.call_args_list],
+                ["app-a-model", "app-b-model"],
+            )
+            self.assertEqual(embeddings._load_model.cache_info().maxsize, 1)
+        finally:
+            embeddings._load_model.cache_clear()
+
 
 class MMRTest(unittest.TestCase):
     def test_mmr_balances_relevance_with_diversity(self):
         candidates = [
-            {"id": "best", "text": "best",
- "tenant_id": "tenant-a",
-                },
-            {"id": "duplicate", "text": "duplicate",
- "tenant_id": "tenant-a",
-                },
-            {"id": "diverse", "text": "diverse",
- "tenant_id": "tenant-a",
-                },
+            {
+                "id": "best",
+                "text": "best",
+                "tenant_id": "tenant-a",
+            },
+            {
+                "id": "duplicate",
+                "text": "duplicate",
+                "tenant_id": "tenant-a",
+            },
+            {
+                "id": "diverse",
+                "text": "diverse",
+                "tenant_id": "tenant-a",
+            },
         ]
         candidate_vectors = [[0.9, 0.1], [0.8, 0.2], [0.0, 1.0]]
 
@@ -205,11 +317,18 @@ class MMRTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in selected], ["best", "diverse"])
 
     def test_mmr_returns_all_available_candidates_when_limit_is_larger(self):
-        candidates = [{"id": "one", "text": "one",
- "tenant_id": "tenant-a",
-                }, {"id": "two", "text": "two",
- "tenant_id": "tenant-a",
-                },]
+        candidates = [
+            {
+                "id": "one",
+                "text": "one",
+                "tenant_id": "tenant-a",
+            },
+            {
+                "id": "two",
+                "text": "two",
+                "tenant_id": "tenant-a",
+            },
+        ]
         with patch.object(mmr, "embed_texts", return_value=[[1.0, 0.0], [0.0, 1.0]]):
             selected = mmr.mmr_select([1.0, 0.0], candidates, top_k=5)
 
@@ -218,9 +337,16 @@ class MMRTest(unittest.TestCase):
     def test_mmr_rejects_mismatched_embedding_dimensions(self):
         with patch.object(mmr, "embed_texts", return_value=[[1.0, 0.0, 0.0]]):
             with self.assertRaisesRegex(ValueError, "matching dimensions"):
-                mmr.mmr_select([1.0, 0.0], [{"id": "one", "text": "one",
- "tenant_id": "tenant-a",
-                },])
+                mmr.mmr_select(
+                    [1.0, 0.0],
+                    [
+                        {
+                            "id": "one",
+                            "text": "one",
+                            "tenant_id": "tenant-a",
+                        },
+                    ],
+                )
 
     def test_mmr_short_circuits_without_embedding_empty_candidates(self):
         with patch.object(mmr, "embed_texts") as embed:
@@ -234,15 +360,21 @@ class RerankerTest(unittest.TestCase):
         model = Mock()
         model.predict.return_value = [0.1, 0.9, 0.5]
         candidates = [
-            {"id": "low", "text": "low",
- "tenant_id": "tenant-a",
-                },
-            {"id": "high", "text": "high",
- "tenant_id": "tenant-a",
-                },
-            {"id": "middle", "text": "middle",
- "tenant_id": "tenant-a",
-                },
+            {
+                "id": "low",
+                "text": "low",
+                "tenant_id": "tenant-a",
+            },
+            {
+                "id": "high",
+                "text": "high",
+                "tenant_id": "tenant-a",
+            },
+            {
+                "id": "middle",
+                "text": "middle",
+                "tenant_id": "tenant-a",
+            },
         ]
 
         with patch.object(reranker, "_get_reranker", return_value=model):
@@ -259,15 +391,37 @@ class RerankerTest(unittest.TestCase):
             self.assertEqual(reranker.rerank("query", []), [])
         get_reranker.assert_not_called()
 
+    def test_concurrent_cold_calls_construct_one_reranker(self):
+        barrier = Barrier(2)
+        model = Mock()
+        constructor = Mock(side_effect=lambda _name: (time.sleep(0.05), model)[1])
+        reranker._load_reranker.cache_clear()
+
+        def load_model():
+            barrier.wait(timeout=2)
+            return reranker._get_reranker("concurrent-reranker")
+
+        with (
+            patch.object(
+                reranker,
+                "load_sentence_transformers",
+                return_value=SimpleNamespace(CrossEncoder=constructor),
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            results = list(executor.map(lambda _index: load_model(), range(2)))
+
+        self.assertIs(results[0], model)
+        self.assertIs(results[1], model)
+        constructor.assert_called_once_with("concurrent-reranker")
+
 
 class PyarrowPlaceholderTest(unittest.TestCase):
     """The shim that keeps sentence-transformers importable on hosts whose
     Application Control policy blocks pyarrow's native _dataset extension."""
 
     def test_healthy_host_uses_the_real_pyarrow_dataset_and_reuses_it(self):
-        loaded_real_extension = (
-            sentence_transformers_loader.ensure_pyarrow_dataset_importable()
-        )
+        loaded_real_extension = sentence_transformers_loader.ensure_pyarrow_dataset_importable()
         module = importlib.import_module("pyarrow.dataset")
 
         self.assertIs(sys.modules["pyarrow.dataset"], module)
@@ -291,9 +445,7 @@ class PyarrowPlaceholderTest(unittest.TestCase):
             with self.assertRaises(ImportError):
                 importlib.import_module("pyarrow.dataset")
 
-            installed_placeholder = (
-                sentence_transformers_loader.ensure_pyarrow_dataset_importable()
-            )
+            installed_placeholder = sentence_transformers_loader.ensure_pyarrow_dataset_importable()
 
             dataset = importlib.import_module("pyarrow.dataset")
             self.assertFalse(installed_placeholder)
@@ -322,18 +474,25 @@ class PyarrowPlaceholderTest(unittest.TestCase):
 
 class QdrantStoreTest(unittest.TestCase):
     def test_get_client_includes_api_key_only_when_configured(self):
-        with patch.object(qdrant_store, "QdrantClient") as client_type, patch.dict(
-            qdrant_store.os.environ, {"QDRANT_API_KEY": "secret"}
+        configured = qdrant_store.runtime_settings.application.model_copy(
+            update={"qdrant_api_key": SecretStr("secret")}
+        )
+        with (
+            patch.object(qdrant_store, "QdrantClient") as client_type,
+            patch.object(qdrant_store, "runtime_settings", SimpleNamespace(application=configured)),
+            patch.dict("os.environ", {"QDRANT_API_KEY": "later-env-ignored"}),
         ):
             qdrant_store.get_client()
-        client_type.assert_called_once_with(url=qdrant_store.QDRANT_URL, api_key="secret")
+        client_type.assert_called_once_with(url=configured.qdrant_url, api_key="secret", timeout=10)
 
         client_type.reset_mock()
-        with patch.object(qdrant_store, "QdrantClient") as client_type, patch.dict(
-            qdrant_store.os.environ, {"QDRANT_API_KEY": ""}
-        ):
+        with patch.object(qdrant_store, "QdrantClient") as client_type:
             qdrant_store.get_client()
-        client_type.assert_called_once_with(url=qdrant_store.QDRANT_URL)
+        client_type.assert_called_once_with(
+            url=qdrant_store.runtime_settings.application.qdrant_url,
+            api_key=None,
+            timeout=10,
+        )
 
     def test_ensure_collection_creates_missing_cosine_collection(self):
         client = Mock()
@@ -369,9 +528,10 @@ class QdrantStoreTest(unittest.TestCase):
         ]
         vectors = [[0.0] * qdrant_store.VECTOR_SIZE, [1.0] * qdrant_store.VECTOR_SIZE]
 
-        with patch.object(qdrant_store, "ensure_collection") as ensure, patch.object(
-            qdrant_store, "embed_texts", return_value=vectors
-        ) as embed:
+        with (
+            patch.object(qdrant_store, "ensure_collection") as ensure,
+            patch.object(qdrant_store, "embed_texts", return_value=vectors) as embed,
+        ):
             qdrant_store.index_chunks(chunks, client=client)
 
         ensure.assert_called_once_with(client)
@@ -384,9 +544,10 @@ class QdrantStoreTest(unittest.TestCase):
 
     def test_index_chunks_short_circuits_empty_input(self):
         client = Mock()
-        with patch.object(qdrant_store, "ensure_collection") as ensure, patch.object(
-            qdrant_store, "embed_texts"
-        ) as embed:
+        with (
+            patch.object(qdrant_store, "ensure_collection") as ensure,
+            patch.object(qdrant_store, "embed_texts") as embed,
+        ):
             qdrant_store.index_chunks([], client=client)
 
         ensure.assert_not_called()
@@ -406,7 +567,8 @@ class QdrantStoreTest(unittest.TestCase):
         )
         with patch.object(qdrant_store, "embed_query", return_value=[0.1, 0.2]):
             results = qdrant_store.dense_search(
-                "annual leave", "tenant-a",
+                "annual leave",
+                "tenant-a",
                 top_k=3,
                 metadata_filter={"filename": "hr.pdf"},
                 client=client,
@@ -432,6 +594,79 @@ class QdrantStoreTest(unittest.TestCase):
         self.assertEqual(query["limit"], 3)
         self.assertEqual(query["query_filter"].must[0].key, "filename")
         self.assertEqual(query["query_filter"].must[0].match.value, "hr.pdf")
+        active_filter = query["query_filter"].must[-1]
+        self.assertEqual(active_filter.min_should.min_count, 1)
+        self.assertEqual(len(active_filter.should), 2)
+
+    def test_versioned_points_start_inactive_and_have_versioned_ids(self):
+        client = Mock()
+        chunk = Chunk(
+            qdrant_store.make_chunk_id("tenant-a", "hr.pdf", 1, 0, "version-a"),
+            "annual leave",
+            "hr.pdf",
+            1,
+            0,
+            "tenant-a",
+            "document-a",
+            "version-a",
+        )
+        with (
+            patch.object(qdrant_store, "_ensure_collection"),
+            patch.object(qdrant_store, "embed_texts", return_value=[[0.1] * 768]),
+        ):
+            qdrant_store.index_chunks([chunk], client=client)
+
+        payload = client.upsert.call_args.kwargs["points"][0].payload
+        self.assertEqual(payload["document_id"], "document-a")
+        self.assertEqual(payload["version_id"], "version-a")
+        self.assertFalse(payload["is_active"])
+        self.assertNotEqual(
+            chunk.id,
+            qdrant_store.make_chunk_id("tenant-a", "hr.pdf", 1, 0, "version-b"),
+        )
+
+    def test_activation_exposes_target_and_retires_legacy_points(self):
+        client = Mock()
+        client.get_collections.return_value = SimpleNamespace(
+            collections=[SimpleNamespace(name=qdrant_store.COLLECTION_NAME)]
+        )
+        qdrant_store.activate_document_version(
+            "tenant-a", "document-a", "version-a", "hr.pdf", client=client
+        )
+
+        self.assertEqual(client.set_payload.call_count, 2)
+        activated_filter = client.set_payload.call_args_list[0].kwargs["points"]
+        retired_filter = client.set_payload.call_args_list[1].kwargs["points"]
+        self.assertEqual(activated_filter.must[1].key, "document_id")
+        self.assertEqual(activated_filter.must[2].match.value, "version-a")
+        self.assertEqual(retired_filter.must_not[0].match.value, "version-a")
+        client.delete.assert_called_once()
+        legacy_filter = client.delete.call_args.kwargs["points_selector"]
+        self.assertEqual(legacy_filter.must[-1].is_empty, True)
+
+    def test_owned_qdrant_store_selects_its_configured_embedding_for_search(self):
+        client = Mock()
+        client.query_points.return_value = SimpleNamespace(points=[])
+        settings = load_runtime_settings({"EMBEDDING_MODEL": "app-search-model"}).application
+        store = qdrant_store.QdrantStore(settings, client_factory=lambda **_: client)
+        with patch.object(qdrant_store, "embed_query", return_value=[0.1, 0.2]) as embed:
+            qdrant_store.dense_search("question", "tenant-a", store=store)
+
+        embed.assert_called_once_with("question", model_name="app-search-model")
+        store.close()
+
+    def test_owned_qdrant_store_selects_its_configured_embedding_for_indexing(self):
+        client = Mock()
+        settings = load_runtime_settings({"EMBEDDING_MODEL": "app-index-model"}).application
+        store = qdrant_store.QdrantStore(settings, client_factory=lambda **_: client)
+        chunk = Chunk("id", "text", "file.txt", 1, 0, "tenant-a")
+        with patch.object(qdrant_store, "embed_texts", return_value=[[0.1] * 768]) as embed:
+            with patch.object(qdrant_store, "_ensure_collection"):
+                qdrant_store.index_chunks([chunk], store=store)
+
+        embed.assert_called_once_with(["text"], model_name="app-index-model")
+        client.upsert.assert_called_once()
+        store.close()
 
     def test_dense_search_validates_query_and_limit_before_external_calls(self):
         client = Mock()

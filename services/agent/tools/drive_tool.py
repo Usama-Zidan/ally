@@ -3,6 +3,7 @@ Google Drive integration. Mocked for now -- see jira_tool.py's module
 docstring for the general pattern (real connected-accounts check, fake
 response body, drop-in extension point for the real API).
 """
+
 from __future__ import annotations
 
 import uuid
@@ -10,6 +11,7 @@ from typing import Any
 
 from services.agent.connected_accounts import get_connected_account
 from services.agent.tools.base import Tool, ToolError, ToolResult
+from services.agent.tools.contracts import validate_tool_arguments
 
 
 class DriveTool(Tool):
@@ -32,6 +34,7 @@ class DriveTool(Tool):
         return get_connected_account(tenant_id, "google_drive") is not None
 
     async def execute(self, tenant_id: str, action: str, params: dict[str, Any]) -> ToolResult:
+        params = validate_tool_arguments(self.name, action, params)
         if get_connected_account(tenant_id, "google_drive") is None:
             raise ToolError(
                 "Google Drive isn't connected yet. Connect a Google account before asking "

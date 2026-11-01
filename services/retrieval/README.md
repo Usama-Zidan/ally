@@ -17,20 +17,20 @@ query -> Qdrant dense search + BM25 lexical search
 - `reranker.py` — bge-reranker-v2 cross-encoder
 - `mmr.py` — diversity-aware final selection
 - `pipeline.py` — retrieval entrypoint with stage toggles and metadata filters
-- `backfill_index.py` — rebuilds both indexes from Phase 1 Postgres chunks
+- `backfill_index.py` — rebuilds both indexes from the legacy Postgres `document_chunks` table
 
-The Temporal ingestion workflow calls `embed_and_index` after Postgres
-persistence, so new documents are indexed automatically. Run the backfill
-script when migrating existing Phase 1 data:
+The Temporal ingestion workflow stages version-specific chunks and vectors,
+activates the version, then rebuilds the active BM25 view. Run the backfill
+script only to load legacy `document_chunks` rows that have not been migrated:
 
 ```bash
 python services/retrieval/backfill_index.py
 ```
 
-The `document_chunks` schema is versioned in
-`infra/postgres/001_document_chunks.sql` and is mounted into the Postgres
-container during first initialization. Existing volumes must be migrated
-explicitly before running ingestion.
+The active document/version schema is managed by Alembic migrations under
+`migrations/versions/`. The SQL file in `infra/postgres/` is the legacy bootstrap
+schema for new development databases; existing volumes must be upgraded with
+`python -m alembic upgrade head` before running the current ingestion workflow.
 
 ## Evaluation
 

@@ -102,6 +102,7 @@ class ConfigContractTest(unittest.TestCase):
             "QDRANT_API_KEY": "local-key",
             "QDRANT_COLLECTION": "test_chunks",
             "EMBEDDING_MODEL": "test-embedding",
+            "RERANKER_MODEL": "test-reranker",
             "MAX_UPLOAD_BYTES": "1234",
             "BM25_REBUILD_MIN_INTERVAL_SECONDS": "90",
             "TEXTRACT_S3_BUCKET": "test-bucket",
@@ -117,6 +118,7 @@ class ConfigContractTest(unittest.TestCase):
         self.assertEqual(loaded.qdrant_api_key, "local-key")
         self.assertEqual(loaded.qdrant_collection, "test_chunks")
         self.assertEqual(loaded.embedding_model, "test-embedding")
+        self.assertEqual(loaded.reranker_model, "test-reranker")
         self.assertEqual(loaded.max_upload_bytes, 1234)
         self.assertEqual(loaded.bm25_rebuild_min_interval_seconds, 90.0)
         self.assertEqual(loaded.textract_s3_bucket, "test-bucket")

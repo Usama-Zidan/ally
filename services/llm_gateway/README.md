@@ -17,3 +17,12 @@ any failure — including a failure partway through an already-started
 stream. Called from `services.api.main.chat_ws`; see the top-level
 README's "Chat: LLM gateway + streaming with citations" section for the
 full request flow.
+
+The API composition root injects an `LLMGateway` built from each app's
+immutable settings into chat streaming, query condensation and intent
+classification. Its Router and breaker are app-scoped. LiteLLM's HTTP client
+cache is process-scoped and cleaned up by LiteLLM at interpreter exit; Router
+has no supported close method, and its reset operation mutates shared global
+state, so app shutdown must not call either operation on shared LiteLLM state.
+The module-level functions remain as compatibility entrypoints for standalone
+callers.

@@ -2,6 +2,7 @@
 Google Calendar integration. Mocked for now -- see jira_tool.py's module
 docstring for the general pattern.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -9,6 +10,7 @@ from typing import Any
 
 from services.agent.connected_accounts import get_connected_account
 from services.agent.tools.base import Tool, ToolError, ToolResult
+from services.agent.tools.contracts import validate_tool_arguments
 
 
 class CalendarTool(Tool):
@@ -21,11 +23,12 @@ class CalendarTool(Tool):
     actions = {
         "create_event": (
             "Create a new calendar event. Params: title (string, required), "
-            "start_time (string, required, ISO 8601), end_time (string, optional, ISO 8601)."
+            "start_time (string, required, ISO 8601 with timezone), "
+            "end_time (string, optional, ISO 8601 with timezone, after start_time)."
         ),
         "list_events": (
-            "List upcoming events in a date range. Params: start (string, optional, ISO 8601), "
-            "end (string, optional, ISO 8601)."
+            "List upcoming events in a date range. Params: start (string, optional, ISO 8601 with timezone), "
+            "end (string, optional, ISO 8601 with timezone, after start)."
         ),
         "delete_event": "Cancel an event. Params: event_id (string, required).",
     }
@@ -34,6 +37,7 @@ class CalendarTool(Tool):
         return get_connected_account(tenant_id, "google_calendar") is not None
 
     async def execute(self, tenant_id: str, action: str, params: dict[str, Any]) -> ToolResult:
+        params = validate_tool_arguments(self.name, action, params)
         if get_connected_account(tenant_id, "google_calendar") is None:
             raise ToolError(
                 "Google Calendar isn't connected yet. Connect a Google account before "

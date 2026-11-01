@@ -197,7 +197,7 @@ def run_ragas_metrics(
     # evaluator_llm = LangchainLLMWrapper(
     #     ChatOpenAI(
     #         model="Qwen/Qwen3-7B",
-    #         base_url="http://127.0.0.1:8001/v1", 
+    #         base_url="http://127.0.0.1:8002/v1", 
     #         api_key="local"
     #         )
     #     )

@@ -45,6 +45,7 @@ redisvl==0.27.1
 pymongo==4.18.0
 psycopg2-binary==2.9.12
 sqlalchemy==2.0.43
+alembic==1.16.5
 
 # --- Clustering / Topic Modeling ---
 bertopic==0.17.4

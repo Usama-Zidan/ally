@@ -12,6 +12,7 @@ replacing the body of each `if action == ...` branch with an actual
 `account.access_token` -- the call sites in services.agent.graph and the
 classifier prompt do not need to change.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -20,6 +21,7 @@ from typing import Any
 from config import JIRA_BASE_URL
 from services.agent.connected_accounts import get_connected_account
 from services.agent.tools.base import Tool, ToolError, ToolResult
+from services.agent.tools.contracts import validate_tool_arguments
 
 
 class JiraTool(Tool):
@@ -36,8 +38,7 @@ class JiraTool(Tool):
         ),
         "search_tickets": "Search for tickets. Params: query (string, required).",
         "get_ticket": (
-            "Get the details of a ticket. Params: ticket_key (string, required, "
-            "e.g. 'PROJ-123')."
+            "Get the details of a ticket. Params: ticket_key (string, required, e.g. 'PROJ-123')."
         ),
         "add_comment": (
             "Add a comment to an existing ticket. Params: ticket_key (string, required), "
@@ -49,6 +50,7 @@ class JiraTool(Tool):
         return get_connected_account(tenant_id, "jira") is not None
 
     async def execute(self, tenant_id: str, action: str, params: dict[str, Any]) -> ToolResult:
+        params = validate_tool_arguments(self.name, action, params)
         account = get_connected_account(tenant_id, "jira")
         if account is None:
             raise ToolError(

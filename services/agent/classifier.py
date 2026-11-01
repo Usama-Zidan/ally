@@ -22,11 +22,13 @@ guessed at; the hand-rolled JSON parsing below has an explicit fallback
 for exactly the failure mode Instructor would otherwise guard against
 (malformed/unparseable model output).
 """
+
 from __future__ import annotations
 
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -84,7 +86,19 @@ _CLASSIFIER_SYSTEM_PROMPT = (
     "listed below. Set tool_name to the tool's name and action to one of "
     "its listed actions, with whatever params that action needs.\n"
     '- "conversational": greetings, small talk, or anything not covered '
-    "by the above -- when in doubt between this and \"rag\", prefer \"rag\".\n\n"
+    'by the above -- when in doubt between this and "rag", prefer "rag".\n\n'
+    "Routing rules:\n"
+    "- If the user asks to do something on their own PC, choose local_pc when it is listed; "
+    "do not route that request to rag just because it is not in uploaded documents.\n"
+    "- For a named video/channel on a known site, use local_pc.open_app, keep the site in "
+    "app_name, and set search_query to the full user phrase. Example: 'open ishowspeed WC "
+    "final video on youtube' -> app_name='youtube', search_query=the full request.\n"
+    "- For mouse/cursor requests to a screen corner, use move_mouse_to_corner with a corner "
+    "from its description.\n"
+    "- Questions about what the PC companion can access are conversational questions, not "
+    "document retrieval.\n"
+    "- To open a website or browser, use local_pc.open_app rather than shell. Use "
+    "local_pc.run_command only when the user actually needs a Windows shell command.\n\n"
     "Available tools:\n{tools_block}"
 )
 
@@ -102,13 +116,17 @@ class LLMIntentClassifier(IntentClassifier):
     """Zero-shot classification through the existing LLM gateway -- no
     separate model or fine-tuning, just a constrained prompt."""
 
+    def __init__(self, completion: Callable[..., Awaitable[str]] | None = None) -> None:
+        self._completion = completion
+
     async def classify(self, query: str, tools_block: str) -> Intent:
         system_prompt = _CLASSIFIER_SYSTEM_PROMPT.format(tools_block=tools_block)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query + _NO_THINK_SUFFIX},
         ]
-        raw = await complete_chat(messages, max_tokens=_CLASSIFIER_MAX_TOKENS)
+        complete = self._completion or complete_chat
+        raw = await complete(messages, max_tokens=_CLASSIFIER_MAX_TOKENS)
         return _parse_intent(raw)
 
 
@@ -145,7 +163,11 @@ def _parse_intent(raw: str) -> Intent:
             params=data.get("params") or {},
         )
     except (json.JSONDecodeError, ValueError, AttributeError) as exc:
-        log.warning("intent_classification_parse_failed", error=str(exc), raw=raw[:200])
+        log.warning(
+            "intent_classification_parse_failed",
+            error_type=type(exc).__name__,
+            output_chars=len(raw),
+        )
         return Intent(kind="rag", reasoning="fallback: classifier output could not be parsed")
 
 
@@ -155,19 +177,29 @@ _CLASSIFIERS: dict[str, type[IntentClassifier]] = {
     "llm": LLMIntentClassifier,
 }
 
+
+def build_classifier(
+    name: str | None = None,
+    *,
+    completion: Callable[..., Awaitable[str]] | None = None,
+) -> IntentClassifier:
+    if name is None:
+        name = INTENT_CLASSIFIER
+    classifier_cls = _CLASSIFIERS.get(name)
+    if classifier_cls is None:
+        raise RuntimeError(f"Unknown INTENT_CLASSIFIER {name!r}; registered: {list(_CLASSIFIERS)}")
+    if classifier_cls is LLMIntentClassifier:
+        return LLMIntentClassifier(completion)
+    return classifier_cls()
+
+
 _classifier_instance: IntentClassifier | None = None
 
 
 def get_classifier() -> IntentClassifier:
     global _classifier_instance
     if _classifier_instance is None:
-        classifier_cls = _CLASSIFIERS.get(INTENT_CLASSIFIER)
-        if classifier_cls is None:
-            raise RuntimeError(
-                f"Unknown INTENT_CLASSIFIER {INTENT_CLASSIFIER!r}; "
-                f"registered: {list(_CLASSIFIERS)}"
-            )
-        _classifier_instance = classifier_cls()
+        _classifier_instance = build_classifier()
     return _classifier_instance
 
 

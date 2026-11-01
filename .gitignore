@@ -4,6 +4,8 @@
 !.env.example
 *.secret
 *.secrets
+local_agent/config.json
+local_agent/*audit*.jsonl
 
 # Python environments and packaging
 .venv/
@@ -48,6 +50,9 @@ checkpoints/
 *.sqlite
 *.sqlite3
 
+# Project documentation
+docs/
+
 # Logs and temporary files
 *.log
 logs/
@@ -74,5 +79,6 @@ Thumbs.db
 Desktop.ini
 
 # Local development overrides
+*.dpapi
 *.local
 *.local.*

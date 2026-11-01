@@ -10,11 +10,13 @@ directly against the database instead:
 Prints the raw API key exactly once. Only its hash is stored — if it's
 lost, revoke it and provision a new one rather than trying to recover it.
 """
+
 from __future__ import annotations
 
 import argparse
 
 from services.auth.api_keys import create_tenant_with_key, revoke_api_key
+from services.auth.principal import DEFAULT_SCOPES, KNOWN_SCOPES
 
 
 def main() -> None:
@@ -23,6 +25,12 @@ def main() -> None:
 
     create_parser = subparsers.add_parser("create", help="Create a tenant and issue it an API key")
     create_parser.add_argument("tenant_name")
+    create_parser.add_argument(
+        "--scope",
+        action="append",
+        choices=sorted(KNOWN_SCOPES),
+        help="Explicit credential grant; repeat to grant multiple scopes. Defaults to document/chat scopes.",
+    )
 
     revoke_parser = subparsers.add_parser("revoke", help="Revoke an existing API key")
     revoke_parser.add_argument("api_key")
@@ -30,7 +38,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "create":
-        tenant_id, raw_key = create_tenant_with_key(args.tenant_name)
+        scopes = frozenset(args.scope) if args.scope is not None else DEFAULT_SCOPES
+        tenant_id, raw_key = create_tenant_with_key(args.tenant_name, scopes=scopes)
         print(f"tenant_id: {tenant_id}")
         print(f"api_key:   {raw_key}")
         print("\nStore this key now — it will not be shown again.")

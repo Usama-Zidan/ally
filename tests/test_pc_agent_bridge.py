@@ -1,4 +1,5 @@
 """Tests for services.agent.pc_agent_bridge."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,16 +12,46 @@ from services.agent.pc_agent_bridge import PCAgentBridge, PCAgentError
 def _fake_websocket():
     ws = MagicMock()
     ws.send_json = AsyncMock()
+    ws.close = AsyncMock()
     return ws
 
 
 class RegistrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_close_fails_pending_calls_closes_socket_and_rejects_new_work(self):
+        bridge = PCAgentBridge()
+        ws = _fake_websocket()
+        await bridge.register("tenant-a", ws, {"open_apps": True})
+        send_task = asyncio.create_task(
+            bridge.send_command("tenant-a", "open_apps", "open_app", {}, timeout=5)
+        )
+        await asyncio.sleep(0)
+
+        await bridge.close()
+        with self.assertRaisesRegex(PCAgentError, "shutting down"):
+            await send_task
+        ws.close.assert_awaited_once_with(code=1012, reason="Service shutting down")
+        self.assertFalse(bridge.is_connected("tenant-a"))
+
+        with self.assertRaisesRegex(PCAgentError, "shutting down"):
+            await bridge.send_command("tenant-a", "open_apps", "open_app", {})
+        with self.assertRaisesRegex(PCAgentError, "shutting down"):
+            await bridge.register("tenant-b", _fake_websocket(), {})
+
+    async def test_close_is_idempotent(self):
+        bridge = PCAgentBridge()
+        ws = _fake_websocket()
+        await bridge.register("tenant-a", ws, {})
+        await bridge.close()
+        await bridge.close()
+        ws.close.assert_awaited_once()
+
     async def test_is_connected_reflects_registration_state(self):
         bridge = PCAgentBridge()
         self.assertFalse(bridge.is_connected("tenant-a"))
-        await bridge.register("tenant-a", _fake_websocket(), {"open_apps": True})
+        ws = _fake_websocket()
+        await bridge.register("tenant-a", ws, {"open_apps": True})
         self.assertTrue(bridge.is_connected("tenant-a"))
-        bridge.unregister("tenant-a")
+        bridge.unregister("tenant-a", ws)
         self.assertFalse(bridge.is_connected("tenant-a"))
 
     async def test_get_capabilities_returns_none_when_not_connected(self):
@@ -66,7 +97,7 @@ class RegistrationTest(unittest.IsolatedAsyncioTestCase):
         )
         await asyncio.sleep(0)
 
-        bridge.unregister("tenant-a")
+        bridge.unregister("tenant-a", ws)
 
         with self.assertRaises(PCAgentError):
             await send_task
@@ -101,6 +132,7 @@ class SendCommandTest(unittest.IsolatedAsyncioTestCase):
                     "success": True,
                     "details": {"launched": "notepad"},
                 },
+                ws,
             )
 
         responder = asyncio.ensure_future(respond_after_send())
@@ -132,6 +164,7 @@ class SendCommandTest(unittest.IsolatedAsyncioTestCase):
                     "success": False,
                     "error": "command not found",
                 },
+                ws,
             )
 
         responder = asyncio.ensure_future(respond_with_failure())
@@ -139,40 +172,40 @@ class SendCommandTest(unittest.IsolatedAsyncioTestCase):
             await bridge.send_command("tenant-a", "shell_exec", "run_command", {"command": "x"})
         await responder
 
-        self.assertIn("command not found", str(ctx.exception))
+        self.assertIn("declined or failed", str(ctx.exception))
 
     async def test_times_out_when_no_response_arrives(self):
         bridge = PCAgentBridge()
         await bridge.register("tenant-a", _fake_websocket(), {"open_apps": True})
 
         with self.assertRaises(PCAgentError) as ctx:
-            await bridge.send_command(
-                "tenant-a", "open_apps", "open_app", {}, timeout=0.05
-            )
+            await bridge.send_command("tenant-a", "open_apps", "open_app", {}, timeout=0.05)
         self.assertIn("did not respond", str(ctx.exception))
 
     async def test_result_for_an_unknown_request_id_is_ignored_not_an_error(self):
         # A stray/late result (e.g. after a timeout already resolved the
         # future) must not raise -- it's simply discarded.
         bridge = PCAgentBridge()
-        await bridge.register("tenant-a", _fake_websocket(), {"open_apps": True})
+        ws = _fake_websocket()
+        await bridge.register("tenant-a", ws, {"open_apps": True})
         await bridge.handle_result(
-            "tenant-a", {"type": "result", "request_id": "does-not-exist", "success": True}
+            "tenant-a", {"type": "result", "request_id": "does-not-exist", "success": True}, ws
         )  # must not raise
 
     async def test_result_without_a_string_request_id_is_ignored(self):
         bridge = PCAgentBridge()
-        await bridge.register("tenant-a", _fake_websocket(), {"open_apps": True})
+        ws = _fake_websocket()
+        await bridge.register("tenant-a", ws, {"open_apps": True})
 
         for request_id in (None, [], 123):
             await bridge.handle_result(
-                "tenant-a", {"type": "result", "request_id": request_id, "success": True}
+                "tenant-a", {"type": "result", "request_id": request_id, "success": True}, ws
             )
 
     async def test_result_for_an_unregistered_tenant_is_ignored_not_an_error(self):
         bridge = PCAgentBridge()
         await bridge.handle_result(
-            "tenant-never-connected", {"request_id": "x", "success": True}
+            "tenant-never-connected", {"request_id": "x", "success": True}, _fake_websocket()
         )  # must not raise
 
     async def test_send_failure_cleans_up_the_pending_future(self):

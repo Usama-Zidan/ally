@@ -1,10 +1,39 @@
 """FastAPI dependencies for resolving the caller's tenant from an API key."""
+
 from __future__ import annotations
 
+import psycopg2
 from fastapi import Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
-from services.auth.api_keys import resolve_tenant
+from services.auth.api_keys import resolve_principal
+from services.auth.principal import AuthorizationDenied, Principal
+
+
+async def authenticate_key(raw_key: str | None) -> Principal | None:
+    """Distinguish an authentication-store outage from an invalid credential."""
+    try:
+        return await run_in_threadpool(resolve_principal, raw_key)
+    except (psycopg2.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=503, detail="Authentication is temporarily unavailable"
+        ) from exc
+
+
+async def get_current_principal(x_api_key: str | None = Header(default=None)) -> Principal:
+    principal = await authenticate_key(x_api_key)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+    return principal
+
+
+async def get_ingestion_tenant(x_api_key: str | None = Header(default=None)) -> str:
+    principal = await get_current_principal(x_api_key)
+    try:
+        principal.require("documents:ingest")
+    except AuthorizationDenied as exc:
+        raise HTTPException(status_code=403, detail="Document ingestion is not permitted") from exc
+    return principal.tenant_id
 
 
 async def get_current_tenant(x_api_key: str | None = Header(default=None)) -> str:
@@ -20,17 +49,16 @@ async def get_current_tenant(x_api_key: str | None = Header(default=None)) -> st
         HTTPException: 401 if the header is missing or the key is
             unknown/revoked.
     """
-    tenant_id = await run_in_threadpool(resolve_tenant, x_api_key)
-    if tenant_id is None:
-        raise HTTPException(status_code=401, detail="Missing or invalid API key")
-    return tenant_id
+    return (await get_current_principal(x_api_key)).tenant_id
 
 
 async def get_current_tenant_ws(api_key: str | None) -> str | None:
-    """WebSocket variant: browsers can't set custom headers during the
-    WebSocket handshake, so the key arrives as a query parameter instead
-    (see services.api.main.chat_ws). Returns None instead of raising so
+    """Resolve a WebSocket key supplied by the transport.
+
+    Native clients use X-API-Key; query parameters remain a legacy browser
+    path only in development; browser clients should use scoped tickets. Returns None so
     the caller can close the socket with a proper WebSocket close code
     rather than surfacing an HTTP error page.
     """
-    return await run_in_threadpool(resolve_tenant, api_key)
+    principal = await authenticate_key(api_key)
+    return principal.tenant_id if principal else None

@@ -6,6 +6,7 @@ it) -- only the classifier and tool registry are patched, so the actual
 routing/dispatch wiring (add_conditional_edges, the tool_node error
 handling) is genuinely under test.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -14,8 +15,16 @@ from unittest.mock import patch
 from services.agent import classifier as classifier_mod
 from services.agent import registry as registry_mod
 from services.agent.classifier import Intent
-from services.agent.graph import route_message
+from services.agent.graph import build_graph, route_message as route_graph_message
 from services.agent.tools.base import Tool, ToolError, ToolResult
+from services.auth.principal import Principal, LEGACY_SCOPES
+
+
+async def route_message(tenant_id, query):
+    """Supply the authenticated credential required by tool-dispatch tests."""
+    return await route_graph_message(
+        tenant_id, query, principal=Principal(tenant_id, "test-credential", LEGACY_SCOPES)
+    )
 
 
 class _StubTool(Tool):
@@ -60,17 +69,39 @@ class RouteMessageTest(unittest.IsolatedAsyncioTestCase):
             called["n"] += 1
             return Intent(kind="rag")
 
-        _install_registry(
-            _StubTool(result=ToolResult(success=True, summary="Created MOCK-1"))
-        )
+        _install_registry(_StubTool(result=ToolResult(success=True, summary="Created MOCK-1")))
 
         with patch.object(classifier_mod.LLMIntentClassifier, "classify", fake_classify):
             state = await route_message("tenant-a", '/jira.create_ticket summary="Fix bug"')
 
         self.assertEqual(state["route"], "tool")
-        self.assertEqual(called["n"], 0, "classifier must not run when an explicit command is given")
+        self.assertEqual(
+            called["n"], 0, "classifier must not run when an explicit command is given"
+        )
         self.assertEqual(state["intent"].params, {"summary": "Fix bug"})
         self.assertEqual(state["tool_result"].summary, "Created MOCK-1")
+
+    async def test_compiled_graph_uses_its_injected_classifier_and_registry(self):
+        tool = _StubTool(result=ToolResult(success=True, summary="isolated result"))
+        registry = registry_mod.ToolRegistry()
+        registry.register(tool)
+
+        class Classifier:
+            async def classify(self, query, tools_block):
+                self.asserted_tools = tools_block
+                return Intent(kind="tool", tool_name="jira", action="create_ticket")
+
+        classifier = Classifier()
+        graph = build_graph(classifier=classifier, registry=registry)
+        state = await route_graph_message(
+            "tenant-a",
+            "please do this",
+            principal=Principal("tenant-a", "injected-credential", LEGACY_SCOPES),
+            graph=graph,
+        )
+
+        self.assertEqual(state["tool_result"].summary, "isolated result")
+        self.assertIn("jira", classifier.asserted_tools)
 
     async def test_classifier_routes_to_rag_without_executing_any_tool(self):
         _install_registry()

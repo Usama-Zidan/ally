@@ -1,4 +1,4 @@
-"""Tests for services.auth.api_keys — this module is the entire
+"""Tests for services.auth.api_keys â€” this module is the entire
 authentication/tenant-resolution boundary, so it gets direct coverage of
 its own rather than only being exercised indirectly through main.py."""
 from __future__ import annotations
@@ -66,7 +66,7 @@ class ResolveTenantTest(unittest.TestCase):
 
     def test_known_active_key_resolves_to_its_tenant(self):
         conn, cursor = _mock_connection()
-        cursor.fetchone.return_value = ("tenant-123",)
+        cursor.fetchone.return_value = ("credential-123", "tenant-123", ["documents:read"])
 
         with patch.object(psycopg2, "connect", return_value=conn):
             result = api_keys.resolve_tenant("ally_valid-key")
@@ -108,11 +108,11 @@ class ResolveTenantTest(unittest.TestCase):
 
     def test_transient_connection_failure_is_retried_then_succeeds(self):
         conn, cursor = _mock_connection()
-        cursor.fetchone.return_value = ("tenant-123",)
+        cursor.fetchone.return_value = ("credential-123", "tenant-123", ["documents:read"])
 
         attempts = {"n": 0}
 
-        def flaky_connect(dsn):
+        def flaky_connect(dsn, **kwargs):
             attempts["n"] += 1
             if attempts["n"] < 3:
                 raise psycopg2.OperationalError("connection refused")

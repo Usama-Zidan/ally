@@ -2,12 +2,13 @@
 
 Classify -> route to {tool, rag, conversational}. Token-level streaming
 for "rag"/"conversational" stays outside this graph, in
-`services/api/main.py`'s `chat_ws` -- see `graph.py`'s module docstring
-for why.
+`services/chat/use_cases.py`'s `ChatUseCase` -- see `graph.py`'s module
+docstring for why.
 
 ```
 services/agent/
 ├── graph.py                 # LangGraph StateGraph: classify -> tool | END
+├── local_pc_intent.py       # Natural-language fallbacks for local PC requests
 ├── classifier.py            # Pluggable intent classifier (LLM default, "JEV"-ready)
 ├── commands.py               # Explicit /tool.action slash-command parsing (overrides classifier)
 ├── registry.py                # Builds the default ToolRegistry
