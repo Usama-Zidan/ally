@@ -1,4 +1,5 @@
 """Persisted BM25 lexical index used alongside Qdrant dense retrieval."""
+
 from __future__ import annotations
 
 import json
@@ -16,6 +17,7 @@ from rank_bm25 import BM25Okapi
 from config import BM25_INDEX_PATH, BM25_REBUILD_MIN_INTERVAL_SECONDS, POSTGRES_DSN
 
 log = structlog.get_logger()
+
 
 def _resolve_index_path(path: str | Path) -> Path:
     index_path = Path(path)
@@ -152,28 +154,45 @@ def _rebuild_now() -> BM25Index:
     that rebuild_index_from_postgres() exists to debounce."""
     from services.retrieval.qdrant_store import make_chunk_id
 
-    conn = psycopg2.connect(os.getenv("POSTGRES_DSN", POSTGRES_DSN))
+    conn = psycopg2.connect(POSTGRES_DSN)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT tenant_id, filename, page_number, chunk_index, text "
-                "FROM document_chunks ORDER BY tenant_id, filename, page_number, chunk_index;"
+                """
+                SELECT tenant_id, filename, page_number, chunk_index, text, version_id
+                FROM document_chunks
+                WHERE version_id IS NULL
+                UNION ALL
+                SELECT chunks.tenant_id, chunks.filename, chunks.page_number,
+                       chunks.chunk_index, chunks.text, chunks.version_id
+                FROM document_version_chunks AS chunks
+                JOIN document_versions AS versions
+                  ON versions.id = chunks.version_id
+                 AND versions.document_id = chunks.document_id
+                 AND versions.tenant_id = chunks.tenant_id
+                WHERE versions.status = 'active'
+                ORDER BY tenant_id, filename, page_number, chunk_index, version_id;
+                """
             )
             rows = cur.fetchall()
     finally:
         conn.close()
 
-    docs = [
-        {
-            "id": make_chunk_id(tenant_id, filename, page_number, chunk_index),
-            "text": text,
-            "filename": filename,
-            "page_number": page_number,
-            "chunk_index": chunk_index,
-            "tenant_id": tenant_id,
-        }
-        for tenant_id, filename, page_number, chunk_index, text in rows
-    ]
+    docs = []
+    for row in rows:
+        tenant_id, filename, page_number, chunk_index, text = row[:5]
+        version_id = row[5] if len(row) > 5 else None
+        docs.append(
+            {
+                "id": make_chunk_id(tenant_id, filename, page_number, chunk_index, version_id),
+                "text": text,
+                "filename": filename,
+                "page_number": page_number,
+                "chunk_index": chunk_index,
+                "tenant_id": tenant_id,
+                "version_id": str(version_id) if version_id is not None else None,
+            }
+        )
     index = BM25Index()
     index.build(docs)
     index.save()

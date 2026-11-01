@@ -1,4 +1,5 @@
 """Tests for services.agent.tools.local_pc_tool."""
+
 from __future__ import annotations
 
 import unittest
@@ -13,14 +14,33 @@ class LocalPCToolTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tool = LocalPCTool()
 
+    async def test_numeric_slash_command_arguments_are_normalized(self):
+        with patch(
+            "services.agent.tools.local_pc_tool.bridge.send_command",
+            new=AsyncMock(return_value={}),
+        ) as send:
+            await self.tool.execute("tenant-a", "move_mouse", {"x": "1", "y": "2"})
+            self.assertEqual(send.call_args.args[3], {"x": 1, "y": 2})
+            await self.tool.execute(
+                "tenant-a", "run_command", {"command": "dir", "timeout_seconds": "5"}
+            )
+            self.assertEqual(send.call_args.args[3]["timeout_seconds"], 5.0)
+
+    async def test_invalid_numeric_arguments_never_reach_bridge(self):
+        with patch(
+            "services.agent.tools.local_pc_tool.bridge.send_command", new=AsyncMock()
+        ) as send:
+            for timeout in ("nan", "inf", "-1", True, []):
+                with self.subTest(timeout=timeout), self.assertRaises(ToolError):
+                    await self.tool.execute(
+                        "tenant-a", "run_command", {"command": "dir", "timeout_seconds": timeout}
+                    )
+        send.assert_not_awaited()
+
     def test_is_available_reflects_bridge_connection_state(self):
-        with patch(
-            "services.agent.tools.local_pc_tool.bridge.is_connected", return_value=True
-        ):
+        with patch("services.agent.tools.local_pc_tool.bridge.is_connected", return_value=True):
             self.assertTrue(self.tool.is_available("tenant-a"))
-        with patch(
-            "services.agent.tools.local_pc_tool.bridge.is_connected", return_value=False
-        ):
+        with patch("services.agent.tools.local_pc_tool.bridge.is_connected", return_value=False):
             self.assertFalse(self.tool.is_available("tenant-a"))
 
     async def test_unknown_action_raises_tool_error_without_touching_the_bridge(self):
@@ -36,9 +56,7 @@ class LocalPCToolTest(unittest.IsolatedAsyncioTestCase):
             "services.agent.tools.local_pc_tool.bridge.send_command",
             new=AsyncMock(return_value={"launched": "notepad"}),
         ) as send_command:
-            result = await self.tool.execute(
-                "tenant-a", "open_app", {"app_name": "notepad"}
-            )
+            result = await self.tool.execute("tenant-a", "open_app", {"app_name": "notepad"})
 
         send_command.assert_awaited_once_with(
             "tenant-a", "open_apps", "open_app", {"app_name": "notepad"}
@@ -102,6 +120,49 @@ class LocalPCToolTest(unittest.IsolatedAsyncioTestCase):
             await self.tool.execute("tenant-a", "run_command", {"command": "dir"})
 
         self.assertEqual(send_command.call_args.args[1], "shell_exec")
+
+    async def test_shell_success_requires_observed_exit_cleanup_and_audit(self):
+        valid = {
+            "outcome": "exited",
+            "returncode": 0,
+            "cleanup_confirmed": True,
+            "audit_recorded": True,
+        }
+        for changes in (
+            {},
+            {"returncode": 7},
+            {"outcome": "timed_out"},
+            {"cleanup_confirmed": False},
+            {"audit_recorded": False},
+            {"returncode": False},
+        ):
+            details = {**valid, **changes}
+            with patch(
+                "services.agent.tools.local_pc_tool.bridge.send_command",
+                new=AsyncMock(return_value=details),
+            ):
+                result = await self.tool.execute(
+                    "tenant-a", "run_command", {"command": "private-command"}
+                )
+            self.assertEqual(result.success, not changes)
+            self.assertNotIn("private-command", result.summary)
+            self.assertIn(
+                "unverified"
+                if details["outcome"] == "exited" and type(details["returncode"]) is int
+                else "partial",
+                result.summary,
+            )
+
+    async def test_old_or_malformed_companion_cannot_claim_shell_success(self):
+        for details in ({}, {"returncode": 0}, {"outcome": {"forged": "exited"}}):
+            with patch(
+                "services.agent.tools.local_pc_tool.bridge.send_command",
+                new=AsyncMock(return_value=details),
+            ):
+                result = await self.tool.execute(
+                    "tenant-a", "run_command", {"command": "private-command"}
+                )
+            self.assertFalse(result.success)
 
     async def test_mouse_and_keyboard_actions_map_to_mouse_keyboard_control(self):
         with patch(

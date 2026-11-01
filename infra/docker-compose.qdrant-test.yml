@@ -1,0 +1,9 @@
+services:
+  qdrant-owner-test:
+    image: qdrant/qdrant:v1.20.0
+    ports:
+      - "127.0.0.1:56333:6333"
+    tmpfs:
+      - /qdrant/storage:size=128m
+    mem_limit: 512m
+    restart: "no"

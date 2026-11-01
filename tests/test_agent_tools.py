@@ -143,7 +143,7 @@ class CalendarToolTest(unittest.TestCase):
                 self.tool.execute(
                     "tenant-a",
                     "create_event",
-                    {"title": "Standup", "start_time": "2026-01-01T09:00:00"},
+                    {"title": "Standup", "start_time": "2026-01-01T09:00:00Z"},
                 )
             )
         self.assertTrue(result.success)

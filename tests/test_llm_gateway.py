@@ -4,12 +4,14 @@ Tests for services.llm_gateway.router.
 Most breaker behavior is tested with a small fake for determinism; a focused
 test also exercises pybreaker's real async API to catch dependency/setup issues.
 """
+
 from __future__ import annotations
 
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.llm_gateway import router
+from services.runtime.settings import load_runtime_settings
 
 
 class FakeCircuitBreakerError(Exception):
@@ -77,15 +79,17 @@ class BuildModelListTest(unittest.TestCase):
         self.assertEqual(model_names, [router.PRIMARY_MODEL, router.FALLBACK_MODEL])
 
     def test_build_router_only_configures_fallback_chain_when_key_present(self):
-        with patch.object(router, "OPENAI_API_KEY", ""), patch.object(
-            router, "Router"
-        ) as router_cls:
+        with (
+            patch.object(router, "OPENAI_API_KEY", ""),
+            patch.object(router, "Router") as router_cls,
+        ):
             router._build_router()
         self.assertEqual(router_cls.call_args.kwargs["fallbacks"], [])
 
-        with patch.object(router, "OPENAI_API_KEY", "sk-test"), patch.object(
-            router, "Router"
-        ) as router_cls:
+        with (
+            patch.object(router, "OPENAI_API_KEY", "sk-test"),
+            patch.object(router, "Router") as router_cls,
+        ):
             router._build_router()
         self.assertEqual(
             router_cls.call_args.kwargs["fallbacks"],
@@ -103,10 +107,13 @@ class StreamChatCompletionTest(unittest.IsolatedAsyncioTestCase):
         fake_router.acompletion = AsyncMock(
             return_value=_aiter([_make_chunk("Hello "), _make_chunk(None), _make_chunk("world")])
         )
-        with patch.object(router, "_get_router", return_value=fake_router), patch.object(
-            router, "_get_breaker", return_value=install_fake_breaker()
+        with (
+            patch.object(router, "_get_router", return_value=fake_router),
+            patch.object(router, "_get_breaker", return_value=install_fake_breaker()),
         ):
-            deltas = [d async for d in router.stream_chat_completion([{"role": "user", "content": "hi"}])]
+            deltas = [
+                d async for d in router.stream_chat_completion([{"role": "user", "content": "hi"}])
+            ]
 
         self.assertEqual(deltas, ["Hello ", "world"])
         fake_router.acompletion.assert_awaited_once()
@@ -118,8 +125,9 @@ class StreamChatCompletionTest(unittest.IsolatedAsyncioTestCase):
         fake_router.acompletion = AsyncMock(return_value=_aiter([_make_chunk("Hello")]))
         breaker = router.pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
 
-        with patch.object(router, "_get_router", return_value=fake_router), patch.object(
-            router, "_get_breaker", return_value=breaker
+        with (
+            patch.object(router, "_get_router", return_value=fake_router),
+            patch.object(router, "_get_breaker", return_value=breaker),
         ):
             deltas = [
                 delta
@@ -144,8 +152,9 @@ class StreamChatCompletionTest(unittest.IsolatedAsyncioTestCase):
     async def test_initial_request_failure_raises_gateway_error(self):
         fake_router = MagicMock()
         fake_router.acompletion = AsyncMock(side_effect=RuntimeError("connection refused"))
-        with patch.object(router, "_get_router", return_value=fake_router), patch.object(
-            router, "_get_breaker", return_value=install_fake_breaker(fail_max=5)
+        with (
+            patch.object(router, "_get_router", return_value=fake_router),
+            patch.object(router, "_get_breaker", return_value=install_fake_breaker(fail_max=5)),
         ):
             with self.assertRaises(router.LLMGatewayError):
                 async for _ in router.stream_chat_completion([{"role": "user", "content": "hi"}]):
@@ -158,28 +167,79 @@ class StreamChatCompletionTest(unittest.IsolatedAsyncioTestCase):
 
         fake_router = MagicMock()
         fake_router.acompletion = AsyncMock(return_value=broken_stream())
-        with patch.object(router, "_get_router", return_value=fake_router), patch.object(
-            router, "_get_breaker", return_value=install_fake_breaker()
+        with (
+            patch.object(router, "_get_router", return_value=fake_router),
+            patch.object(router, "_get_breaker", return_value=install_fake_breaker()),
         ):
             collected = []
             with self.assertRaises(router.LLMGatewayError):
-                async for delta in router.stream_chat_completion([{"role": "user", "content": "hi"}]):
+                async for delta in router.stream_chat_completion(
+                    [{"role": "user", "content": "hi"}]
+                ):
                     collected.append(delta)
 
         # Tokens received before the mid-stream failure must not be lost.
         self.assertEqual(collected, ["partial "])
+
+    async def test_closing_consumer_closes_provider_stream(self):
+        closed = []
+
+        async def provider_stream():
+            try:
+                yield _make_chunk("first")
+                yield _make_chunk("second")
+            finally:
+                closed.append(True)
+
+        fake_router = MagicMock()
+        fake_router.acompletion = AsyncMock(return_value=provider_stream())
+        with (
+            patch.object(router, "_get_router", return_value=fake_router),
+            patch.object(router, "_get_breaker", return_value=install_fake_breaker()),
+        ):
+            stream = router.stream_chat_completion([{"role": "user", "content": "hi"}])
+            self.assertEqual(await stream.__anext__(), "first")
+            await stream.aclose()
+
+        self.assertEqual(closed, [True])
+
+    async def test_app_gateway_closing_consumer_closes_provider_stream(self):
+        closed = []
+
+        async def provider_stream():
+            try:
+                yield _make_chunk("first")
+                yield _make_chunk("second")
+            finally:
+                closed.append(True)
+
+        gateway = router.LLMGateway(load_runtime_settings({}).application)
+        fake_router = MagicMock()
+        fake_router.acompletion = AsyncMock(return_value=provider_stream())
+        with (
+            patch.object(gateway, "_get_router", return_value=fake_router),
+            patch.object(gateway, "_get_breaker", return_value=install_fake_breaker()),
+        ):
+            stream = gateway.stream_chat_completion([{"role": "user", "content": "hi"}])
+            self.assertEqual(await stream.__anext__(), "first")
+            await stream.aclose()
+
+        self.assertEqual(closed, [True])
 
     async def test_circuit_opens_after_consecutive_failures_and_short_circuits(self):
         fake_router = MagicMock()
         fake_router.acompletion = AsyncMock(side_effect=RuntimeError("backend down"))
         breaker = install_fake_breaker(fail_max=2)
 
-        with patch.object(router, "_get_router", return_value=fake_router), patch.object(
-            router, "_get_breaker", return_value=breaker
+        with (
+            patch.object(router, "_get_router", return_value=fake_router),
+            patch.object(router, "_get_breaker", return_value=breaker),
         ):
             for _ in range(2):
                 with self.assertRaises(router.LLMGatewayError):
-                    async for _ in router.stream_chat_completion([{"role": "user", "content": "hi"}]):
+                    async for _ in router.stream_chat_completion(
+                        [{"role": "user", "content": "hi"}]
+                    ):
                         pass
 
             # Breaker is now open: the next call must fail fast without

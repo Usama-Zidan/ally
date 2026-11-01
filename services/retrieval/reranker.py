@@ -5,11 +5,13 @@ than the bi-encoder similarity used for initial retrieval. Applied only to
 the top ~20-30 fused candidates since cross-encoders are too slow to run
 over an entire corpus.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from services.retrieval.model_loading import MODEL_INFERENCE_GATE, MODEL_LOAD_LOCK
 from services.retrieval.sentence_transformers_loader import load_sentence_transformers
 
 if TYPE_CHECKING:
@@ -19,9 +21,16 @@ DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 
 @lru_cache(maxsize=1)
-def _get_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> CrossEncoder:
+def _load_reranker(model_name: str) -> CrossEncoder:
     """Return a cached cross-encoder for ``model_name``."""
     return load_sentence_transformers().CrossEncoder(model_name)
+
+
+def _get_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> CrossEncoder:
+    # Share the initialization lock with embeddings to avoid simultaneous
+    # heavyweight model construction on API startup or concurrent cold calls.
+    with MODEL_LOAD_LOCK:
+        return _load_reranker(model_name)
 
 
 def warm_reranker(model_name: str = DEFAULT_RERANKER_MODEL) -> None:
@@ -52,7 +61,8 @@ def rerank(
 
     reranker = _get_reranker(model_name)
     pairs = [(query, c["text"]) for c in candidates]
-    rerank_scores = reranker.predict(pairs)
+    with MODEL_INFERENCE_GATE.inference():
+        rerank_scores = reranker.predict(pairs)
 
     for candidate, score in zip(candidates, rerank_scores):
         candidate["rerank_score"] = float(score)

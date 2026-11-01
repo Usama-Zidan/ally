@@ -11,6 +11,7 @@ Each stage is independently swappable/toggleable, which is what makes it
 possible to run the vector-only vs. hybrid vs. hybrid+rerank comparison
 in eval/run_ragas_eval.py.
 """
+
 from __future__ import annotations
 
 import structlog
@@ -20,7 +21,9 @@ from services.retrieval.bm25_index import BM25Index, INDEX_PATH
 from services.retrieval.embeddings import embed_query
 from services.retrieval.fusion import reciprocal_rank_fusion
 from services.retrieval.mmr import mmr_select
-from services.retrieval.qdrant_store import dense_search
+from services.retrieval.model_runtime import RetrievalModels
+from services.retrieval.model_loading import ModelInferenceRejected
+from services.retrieval.qdrant_store import QdrantStore, dense_search
 from services.retrieval.reranker import rerank
 
 log = structlog.get_logger()
@@ -57,6 +60,8 @@ def retrieve(
     use_rerank: bool = True,
     use_mmr: bool = True,
     metadata_filter: dict | None = None,
+    qdrant_store: QdrantStore | None = None,
+    retrieval_models: RetrievalModels | None = None,
 ) -> list[dict]:
     """Return ranked chunks from the enabled dense, lexical, reranking, and MMR stages.
 
@@ -91,9 +96,35 @@ def retrieve(
     if candidate_pool_size < top_k:
         raise ValueError("candidate_pool_size must be greater than or equal to top_k")
 
-    dense_results = dense_search(
-        query, tenant_id, top_k=candidate_pool_size, metadata_filter=metadata_filter
-    )
+    if retrieval_models is None and qdrant_store is None:
+        dense_results = dense_search(
+            query, tenant_id, top_k=candidate_pool_size, metadata_filter=metadata_filter
+        )
+    elif retrieval_models is None:
+        dense_results = dense_search(
+            query,
+            tenant_id,
+            top_k=candidate_pool_size,
+            metadata_filter=metadata_filter,
+            store=qdrant_store,
+        )
+    elif qdrant_store is None:
+        dense_results = dense_search(
+            query,
+            tenant_id,
+            top_k=candidate_pool_size,
+            metadata_filter=metadata_filter,
+            embedding_model=retrieval_models.embedding_model,
+        )
+    else:
+        dense_results = dense_search(
+            query,
+            tenant_id,
+            top_k=candidate_pool_size,
+            metadata_filter=metadata_filter,
+            store=qdrant_store,
+            embedding_model=retrieval_models.embedding_model,
+        )
     log.info("dense_search_done", num_results=len(dense_results))
 
     if use_bm25:
@@ -122,7 +153,13 @@ def retrieve(
 
     if use_rerank and fused:
         try:
-            reranked = rerank(query, fused, top_k=min(candidate_pool_size, len(fused)))
+            rerank_candidates = min(candidate_pool_size, len(fused))
+            if retrieval_models is None:
+                reranked = rerank(query, fused, top_k=rerank_candidates)
+            else:
+                reranked = retrieval_models.rerank(query, fused, top_k=rerank_candidates)
+        except ModelInferenceRejected:
+            raise
         except Exception as exc:  # noqa: BLE001
             log.warning("rerank_unavailable_falling_back_to_fused", error=str(exc))
             reranked = fused[:candidate_pool_size]
@@ -131,8 +168,14 @@ def retrieve(
 
     if use_mmr and reranked:
         try:
-            query_embedding = embed_query(query)
+            query_embedding = (
+                embed_query(query)
+                if retrieval_models is None
+                else retrieval_models.embed_query(query)
+            )
             final = mmr_select(query_embedding, reranked, top_k=top_k)
+        except ModelInferenceRejected:
+            raise
         except Exception as exc:  # noqa: BLE001
             log.warning("mmr_unavailable_falling_back_to_reranked", error=str(exc))
             final = reranked[:top_k]

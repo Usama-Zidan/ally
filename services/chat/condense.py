@@ -13,9 +13,12 @@ The history is rendered as a plain-text transcript inside ONE user message
 turns makes the model continue the QA-with-citations pattern instead of
 performing the rewrite task.
 """
+
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
 
 import structlog
 
@@ -23,9 +26,22 @@ from services.llm_gateway.router import LLMGatewayError, stream_chat_completion
 
 log = structlog.get_logger()
 
-_MAX_TURNS = 6            # last 3 exchanges is plenty for reference resolution
-_ASSISTANT_CHARS = 150    # assistant turns only need to hint at the topic
-_MAX_OUTPUT_CHARS = 300   # a real rewritten question is short
+_MAX_TURNS = 6  # last 3 exchanges is plenty for reference resolution
+_ASSISTANT_CHARS = 150  # assistant turns only need to hint at the topic
+_MAX_OUTPUT_CHARS = 300  # a real rewritten question is short
+
+# Same /no_think rationale as services.agent.classifier: Qwen3 (this
+# project's default self-hosted model) opens every assistant turn with a
+# <think>...</think> block unless this literal string appears in the user
+# turn, and on a small model that reasoning phase can consume the entire
+# max_tokens budget before any visible output is emitted -- which is
+# exactly the empty-`raw` case query_condensation_degenerate below exists
+# to catch. Suppressing it up front avoids hitting that path on every turn.
+_NO_THINK_SUFFIX = "\n\n/no_think"
+# Raised from 128: too tight even for a short rewritten question once any
+# residual reasoning-token overhead is added on a backend that doesn't
+# fully honor /no_think.
+_CONDENSE_MAX_TOKENS = 256
 
 # Same /no_think rationale as services.agent.classifier: Qwen3 (this
 # project's default self-hosted model) opens every assistant turn with a
@@ -63,10 +79,10 @@ CONDENSE_SYSTEM_PROMPT = (
     "You rewrite a user's latest message into a standalone search question. "
     "You are given a conversation transcript as DATA; you are not a participant "
     "in it. Never answer the question, never cite sources, never comment on "
-    "whether information exists. Resolve references (\"this\", \"that\", "
-    "\"the other one\") using the topic from the user's earlier messages, and "
+    'whether information exists. Resolve references ("this", "that", '
+    '"the other one") using the topic from the user\'s earlier messages, and '
     "fix obvious typos. If the latest message is a confirmation like "
-    "\"u sure?\", output the earlier question it refers to. If it is already "
+    '"u sure?", output the earlier question it refers to. If it is already '
     "standalone, output it unchanged. Output ONLY the rewritten question on "
     "one line.\n\n"
     "Example 1:\n"
@@ -157,7 +173,11 @@ def _last_user_question(history: list[dict]) -> str | None:
     return None
 
 
-async def condense_query(history: list[dict], user_query: str) -> str:
+async def condense_query(
+    history: list[dict],
+    user_query: str,
+    completion: Callable[..., AsyncGenerator[str, None]] | None = None,
+) -> str:
     """Returns a history-aware, standalone rewrite of ``user_query`` for
     retrieval purposes.
 
@@ -178,14 +198,16 @@ async def condense_query(history: list[dict], user_query: str) -> str:
 
     messages = _build_condense_messages(history, user_query)
     try:
-        parts = [
-            delta
-            async for delta in stream_chat_completion(
+        parts = []
+        async with aclosing(
+            (completion or stream_chat_completion)(
                 messages, temperature=0.0, max_tokens=_CONDENSE_MAX_TOKENS
             )
-        ]
+        ) as stream:
+            async for delta in stream:
+                parts.append(delta)
     except LLMGatewayError as exc:
-        log.warning("query_condensation_failed", error=str(exc))
+        log.warning("query_condensation_failed", error_type=type(exc).__name__)
         return user_query
 
     raw = "".join(parts)
@@ -197,7 +219,7 @@ async def condense_query(history: list[dict], user_query: str) -> str:
         or "\n" in condensed
         or _CITATION_RE.search(condensed)
     ):
-        log.warning("query_condensation_degenerate", raw=raw[:200])
+        log.warning("query_condensation_degenerate", output_chars=len(raw))
         return user_query
 
     return condensed

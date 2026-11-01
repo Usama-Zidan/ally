@@ -1,0 +1,4 @@
+# Optional quality tools, isolated from application runtime requirements.
+ruff==0.14.2
+mypy==1.18.2
+types-psycopg2==2.9.21.20261008

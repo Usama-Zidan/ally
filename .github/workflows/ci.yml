@@ -6,6 +6,41 @@ on:
   pull_request:
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_secrets.py
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt -r requirements-quality.txt
+      - run: python -m ruff check services workflows local_agent migrations scripts/check_secrets.py tests/test_pc_security.py tests/test_agent_policy.py tests/test_error_redaction.py tests/test_secret_scanner.py tests/test_pc_websocket_transport.py tests/test_principal.py tests/test_websocket_security.py tests/test_websocket_tickets.py tests/test_auth_transport.py tests/test_integration_auth.py tests/test_device_security.py tests/test_device_credentials.py tests/test_device_enrollment_transport.py tests/test_local_output_bounds.py tests/test_cloud_tool_contracts.py
+      - run: python -m mypy
+      - run: python -m mypy --platform win32
+      - run: python -m mypy --follow-imports=skip --ignore-missing-imports --check-untyped-defs services/api/main.py services/api/websocket/chat.py services/api/websocket/pc_agent.py services/chat/use_cases.py services/ingestion/upload.py services/retrieval/model_loading.py services/runtime/task_drain.py workflows/worker.py workflows/activities.py
+      - run: python -m ruff check services/llm_gateway/router.py services/chat/condense.py tests/test_llm_gateway.py tests/test_api_composition.py tests/test_agent_graph.py tests/test_pc_agent_bridge.py tests/test_pc_websocket_transport.py
+      - run: python -m ruff format --check services/llm_gateway/router.py services/api/main.py services/chat/condense.py services/retrieval/model_runtime.py services/retrieval/pipeline.py services/retrieval/qdrant_store.py services/agent/graph.py services/agent/classifier.py services/agent/registry.py services/agent/pc_agent_bridge.py services/agent/tools/local_pc_tool.py tests/test_llm_gateway.py tests/test_api_composition.py tests/test_agent_graph.py tests/test_pc_agent_bridge.py tests/test_pc_websocket_transport.py tests/test_retrieval_components.py tests/test_retrieval_pipeline.py
+      - run: python -m ruff check services/retrieval/qdrant_store.py services/retrieval/pipeline.py services/retrieval/backfill_index.py services/api/main.py workflows/worker.py workflows/activities.py tests/test_qdrant_store_owner.py tests/test_qdrant_owner_integration.py tests/test_api_contract.py tests/test_chat_persistence.py tests/test_runtime_settings.py tests/test_indexing_workflow.py tests/test_ingestion_indexing.py tests/test_retrieval.py tests/test_retrieval_components.py tests/test_retrieval_pipeline.py tests/test_model_inference_admission.py tests/test_integration_retrieval.py
+      - run: python -m ruff format --check services/retrieval/qdrant_store.py services/retrieval/pipeline.py services/retrieval/model_runtime.py services/retrieval/model_loading.py services/retrieval/embeddings.py services/retrieval/reranker.py services/retrieval/backfill_index.py services/api/main.py workflows/worker.py workflows/activities.py tests/test_qdrant_store_owner.py tests/test_qdrant_owner_integration.py tests/test_retrieval_pipeline.py tests/test_retrieval_components.py tests/test_model_inference_admission.py tests/test_api_contract.py tests/test_api_composition.py tests/test_ingestion_indexing.py tests/test_config_contract.py
+      - run: python -m ruff check config.py services/runtime tests/test_runtime_settings.py
+      - run: python -m ruff format --check config.py services/runtime tests/test_runtime_settings.py
+      - run: python -m ruff check services/chat/history.py services/chat/mongo_history.py services/chat/ports.py services/chat/settings.py services/chat/use_cases.py tests/test_mongo_history_store.py tests/test_chat_persistence.py tests/test_integration_history.py
+      - run: python -m ruff format --check services/chat/history.py services/chat/mongo_history.py services/chat/ports.py services/chat/settings.py services/chat/use_cases.py tests/test_mongo_history_store.py tests/test_chat_persistence.py tests/test_integration_history.py tests/test_chat_history.py
+      - run: python -m ruff check tests/test_shell_runner.py tests/test_shell_audit.py tests/test_companion_execution.py tests/test_task_drain.py tests/fixtures/shell_child.py
+      - run: python -m ruff format --check local_agent/shell_runner.py local_agent/execution_audit.py local_agent/local_approval.py tests/test_shell_runner.py tests/test_shell_audit.py tests/test_companion_execution.py tests/test_task_drain.py tests/fixtures/shell_child.py
+      - run: python -m ruff format --check local_agent/agent.py local_agent/action_policy.py local_agent/device_credentials.py local_agent/pair.py services/agent/pc_agent_bridge.py services/agent/policy.py services/agent/tools/local_pc_tool.py services/agent/tools/contracts.py services/agent/tools/jira_tool.py services/agent/tools/drive_tool.py services/agent/tools/calendar_tool.py services/auth services/api/websocket services/api/routes services/ingestion migrations scripts/check_secrets.py tests/test_pc_security.py tests/test_agent_policy.py tests/test_error_redaction.py tests/test_secret_scanner.py tests/test_local_pc_tool.py tests/test_pc_agent_bridge.py tests/test_pc_websocket_transport.py tests/test_principal.py tests/test_websocket_security.py tests/test_websocket_tickets.py tests/test_auth_transport.py tests/test_integration_auth.py tests/test_device_security.py tests/test_device_credentials.py tests/test_device_enrollment_transport.py tests/test_local_output_bounds.py tests/test_cloud_tool_contracts.py
+
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -17,11 +52,80 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Run tests
-        run: python -m unittest discover -s tests -q
+        run: python -m pytest -q -ra
       - name: Compile sources
-        run: python -m compileall -q config.py services workflows eval tests
+        run: python -m compileall -q config.py services workflows local_agent eval tests scripts migrations
       - name: Check diff whitespace
         run: git diff --check
+
+  windows-companion:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install companion test dependencies
+        run: python -m pip install pytest==8.3.3 websockets==16.0
+      - name: Verify actual Windows jobs, socket cancellation, audit and DPAPI
+        run: python -m pytest -q tests/test_shell_runner.py tests/test_shell_audit.py tests/test_companion_execution.py tests/test_device_credentials.py --tb=short -ra
+
+  history-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Start isolated MongoDB with test failpoints
+        run: docker compose -f infra/docker-compose.history-test.yml -p ally-history-check up -d --wait
+      - name: Verify concurrency, ownership, timeout and ambiguous acknowledgement
+        env:
+          RUN_HISTORY_INTEGRATION_TESTS: "1"
+          HISTORY_TEST_MONGO_URI: mongodb://127.0.0.1:57017/?directConnection=true
+        run: python -m pytest -q tests/test_integration_history.py --tb=short -ra
+      - name: Collect isolated container logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.history-test.yml -p ally-history-check logs
+      - name: Stop isolated MongoDB
+        if: always()
+        run: docker compose -f infra/docker-compose.history-test.yml -p ally-history-check down
+
+  qdrant-ownership-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Start disposable Qdrant
+        run: docker compose -f infra/docker-compose.qdrant-test.yml -p ally-qdrant-owner-check up -d
+      - name: Wait for Qdrant
+        run: |
+          for i in {1..30}; do
+            curl --fail --silent http://127.0.0.1:56333/healthz && exit 0
+            sleep 2
+          done
+          docker compose -f infra/docker-compose.qdrant-test.yml -p ally-qdrant-owner-check ps
+          exit 1
+      - name: Verify owned client lifecycle and tenant filtering
+        env:
+          RUN_QDRANT_OWNER_INTEGRATION_TESTS: "1"
+          QDRANT_OWNER_TEST_URL: http://127.0.0.1:56333
+        run: python -m pytest -q tests/test_qdrant_owner_integration.py --tb=short -ra
+      - name: Collect disposable Qdrant logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.qdrant-test.yml -p ally-qdrant-owner-check logs
+      - name: Stop disposable Qdrant
+        if: always()
+        run: docker compose -f infra/docker-compose.qdrant-test.yml -p ally-qdrant-owner-check down
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -43,10 +147,14 @@ jobs:
           done
           docker compose -f infra/docker-compose.yml ps
           exit 1
+      - name: Migrate integration database to head
+        run: alembic upgrade head
       - name: Run Docker integration tests
         env:
           RUN_INTEGRATION_TESTS: "1"
-        run: python -m unittest discover -s tests -p "test_integration*.py" -q
+          RUN_AUTH_INTEGRATION_TESTS: "1"
+          MIGRATION_TEST_POSTGRES_DSN: postgresql://assistant:assistant@localhost:5432/assistant_db
+        run: python -m pytest -q tests/test_integration.py tests/test_integration_retrieval.py tests/test_integration_auth.py -ra
       - name: Collect container logs on failure
         if: failure()
         run: docker compose -f infra/docker-compose.yml logs

@@ -27,9 +27,11 @@ an actionable message if it is missing, because pybreaker's own failure in
 that case is a bare `NameError: name 'gen' is not defined` raised from
 inside the breaker on every single chat message.
 """
+
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, cast
+from contextlib import aclosing
+from typing import Any, AsyncGenerator, AsyncIterator, cast
 
 import litellm
 import pybreaker
@@ -142,7 +144,9 @@ def _get_breaker() -> pybreaker.CircuitBreaker:
     return _breaker
 
 
-async def _start_stream(messages: list[dict], temperature: float | None = .7, max_tokens: int | None = 1024) -> AsyncIterator[Any]:
+async def _start_stream(
+    messages: list[dict], temperature: float | None = 0.7, max_tokens: int | None = 1024
+) -> AsyncIterator[Any]:
     """The call the breaker guards: asks Router for a streaming
     completion. Router itself has already retried/failed-over across
     every configured model by the time this either returns a stream or
@@ -157,13 +161,15 @@ async def _start_stream(messages: list[dict], temperature: float | None = .7, ma
     router = _get_router()
     return await router.acompletion(
         model=PRIMARY_MODEL,
-        messages= cast(Any,messages),
+        messages=cast(Any, messages),
         stream=True,
         **params,
     )
 
 
-async def stream_chat_completion(messages: list[dict], temperature: float | None = 0.7, max_tokens: int | None = 1024) -> AsyncIterator[str]:
+async def stream_chat_completion(
+    messages: list[dict], temperature: float | None = 0.7, max_tokens: int | None = 1024
+) -> AsyncGenerator[str, None]:
     """Streams the assistant's reply as a sequence of text deltas.
 
     Args:
@@ -187,10 +193,10 @@ async def stream_chat_completion(messages: list[dict], temperature: float | None
         call_async = cast(Any, breaker.call_async)
         stream = await call_async(
             _start_stream,
-            messages, 
+            messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            )
+        )
     except pybreaker.CircuitBreakerError as exc:
         log.warning("llm_gateway_circuit_open")
         raise LLMGatewayError(
@@ -198,8 +204,8 @@ async def stream_chat_completion(messages: list[dict], temperature: float | None
             "please try again shortly."
         ) from exc
     except Exception as exc:  # noqa: BLE001
-        log.warning("llm_gateway_request_failed", error=str(exc))
-        raise LLMGatewayError(f"Chat model request failed: {exc}") from exc
+        log.warning("llm_gateway_request_failed", error_type=type(exc).__name__)
+        raise LLMGatewayError("Chat model request failed; please try again later.") from exc
 
     try:
         async for chunk in stream:
@@ -210,8 +216,15 @@ async def stream_chat_completion(messages: list[dict], temperature: float | None
         # A failure mid-stream (after the breaker already recorded this
         # call as a success for having started) still needs to reach the
         # caller as a gateway error, not a raw litellm/httpx exception.
-        log.warning("llm_gateway_stream_interrupted", error=str(exc))
-        raise LLMGatewayError(f"Chat model stream interrupted: {exc}") from exc
+        log.warning("llm_gateway_stream_interrupted", error_type=type(exc).__name__)
+        raise LLMGatewayError("Chat model stream interrupted; please try again later.") from exc
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("llm_gateway_stream_close_failed", error_type=type(exc).__name__)
 
 
 async def complete_chat(
@@ -228,12 +241,12 @@ async def complete_chat(
     varied phrasing -- callers that want different behavior can still
     override both params.
     """
-    parts = [
-        delta
-        async for delta in stream_chat_completion(
-            messages, temperature=temperature, max_tokens=max_tokens
-        )
-    ]
+    parts = []
+    async with aclosing(
+        stream_chat_completion(messages, temperature=temperature, max_tokens=max_tokens)
+    ) as stream:
+        async for delta in stream:
+            parts.append(delta)
     return "".join(parts)
 
 
@@ -243,3 +256,132 @@ def reset_gateway_state() -> None:
     global _router, _breaker
     _router = None
     _breaker = None
+
+
+class LLMGateway:
+    """Application-scoped gateway configuration and retry/breaker state.
+
+    LiteLLM's HTTP clients are cached process-wide and cleaned up by LiteLLM
+    at interpreter exit. Router has no supported close method; therefore an
+    application owns this Router/breaker but must not reset or close the
+    process-wide LiteLLM client cache during lifespan shutdown.
+    """
+
+    def __init__(self, settings: Any) -> None:
+        self._primary_model = settings.qwen_model_name or "qwen-primary"
+        self._fallback_model = "openai-fallback"
+        self._base_url = settings.qwen_vllm_base_url
+        self._api_key = settings.openai_api_key.get_secret_value()
+        self._hosted_model = settings.llm_fallback_model
+        self._timeout = settings.llm_request_timeout_seconds
+        self._max_retries = settings.llm_max_retries
+        self._fail_max = settings.circuit_breaker_fail_max
+        self._reset_timeout = settings.circuit_breaker_reset_timeout_seconds
+        self._router: Router | None = None
+        self._breaker: pybreaker.CircuitBreaker | None = None
+
+    def _get_router(self) -> Router:
+        if self._router is None:
+            model_list = [
+                {
+                    "model_name": self._primary_model,
+                    "litellm_params": {
+                        "model": f"openai/{self._primary_model}",
+                        "api_base": self._base_url,
+                        "api_key": "not-needed",
+                        "timeout": self._timeout,
+                    },
+                }
+            ]
+            if self._api_key:
+                model_list.append(
+                    {
+                        "model_name": self._fallback_model,
+                        "litellm_params": {
+                            "model": self._hosted_model,
+                            "api_key": self._api_key,
+                            "timeout": self._timeout,
+                        },
+                    }
+                )
+            self._router = Router(
+                model_list=model_list,
+                fallbacks=[{self._primary_model: [self._fallback_model]}] if self._api_key else [],
+                num_retries=self._max_retries,
+                timeout=self._timeout,
+            )
+        return self._router
+
+    def _get_breaker(self) -> pybreaker.CircuitBreaker:
+        if not pybreaker.HAS_TORNADO_SUPPORT:
+            raise ImportError(
+                "tornado is required by pybreaker's async circuit breaker "
+                "(services/llm_gateway/router.py) — install requirements.txt"
+            )
+        if self._breaker is None:
+            self._breaker = pybreaker.CircuitBreaker(
+                fail_max=self._fail_max, reset_timeout=self._reset_timeout
+            )
+        return self._breaker
+
+    async def _start_stream(
+        self, messages: list[dict], temperature: float | None, max_tokens: int | None
+    ) -> AsyncIterator[Any]:
+        params: dict[str, Any] = {}
+        if temperature is not None:
+            params["temperature"] = temperature
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+        return await self._get_router().acompletion(
+            model=self._primary_model, messages=cast(Any, messages), stream=True, **params
+        )
+
+    async def stream_chat_completion(
+        self,
+        messages: list[dict],
+        temperature: float | None = 0.7,
+        max_tokens: int | None = 1024,
+    ) -> AsyncGenerator[str, None]:
+        breaker = self._get_breaker()
+        try:
+            call_async = cast(Any, breaker.call_async)
+            stream = await call_async(self._start_stream, messages, temperature, max_tokens)
+        except pybreaker.CircuitBreakerError as exc:
+            log.warning("llm_gateway_circuit_open")
+            raise LLMGatewayError(
+                "The chat model is temporarily unavailable after repeated failures; "
+                "please try again shortly."
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            log.warning("llm_gateway_request_failed", error_type=type(exc).__name__)
+            raise LLMGatewayError("Chat model request failed; please try again later.") from exc
+
+        try:
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as exc:  # noqa: BLE001
+            log.warning("llm_gateway_stream_interrupted", error_type=type(exc).__name__)
+            raise LLMGatewayError("Chat model stream interrupted; please try again later.") from exc
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("llm_gateway_stream_close_failed", error_type=type(exc).__name__)
+
+    async def complete_chat(
+        self,
+        messages: list[dict],
+        temperature: float | None = 0.0,
+        max_tokens: int | None = 256,
+    ) -> str:
+        parts = []
+        async with aclosing(
+            self.stream_chat_completion(messages, temperature=temperature, max_tokens=max_tokens)
+        ) as stream:
+            async for delta in stream:
+                parts.append(delta)
+        return "".join(parts)

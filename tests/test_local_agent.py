@@ -135,7 +135,8 @@ class LocalAgentCapabilityGatingTest(unittest.TestCase):
             "server_url": "wss://x",
             "api_key": "k",
         }
-        return getattr(local_agent, "LocalAgent")(config)
+        # Trusted local approval fixture; production requires terminal consent.
+        return getattr(local_agent, "LocalAgent")(config, approve=lambda action, params: True)
 
     def test_disabled_capability_blocks_the_action_regardless_of_params(self):
         agent = self._agent()  # everything disabled

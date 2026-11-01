@@ -1,0 +1,57 @@
+# Disposable Temporal and S3-compatible services for ingestion lifecycle tests.
+# Every datastore is tmpfs-backed; no application volumes are mounted.
+services:
+  temporal-postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: temporal_test
+      POSTGRES_PASSWORD: temporal-test-only
+      POSTGRES_DB: temporal
+    tmpfs:
+      - /var/lib/postgresql/data
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal_test -d temporal"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  temporal:
+    image: temporalio/auto-setup:1.25.1
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal_test
+      POSTGRES_PWD: temporal-test-only
+      POSTGRES_SEEDS: temporal-postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/docker.yaml
+    ports:
+      - "127.0.0.1:57233:7233"
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z $(hostname -i) 7233"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
+    mem_limit: 1g
+    restart: "no"
+
+  s3mock:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /data
+    ports:
+      - "127.0.0.1:59000:9090"
+    tmpfs:
+      - /data:size=512m
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/favicon.ico"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 512m
+    restart: "no"

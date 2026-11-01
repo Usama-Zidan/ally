@@ -78,6 +78,10 @@ class ToolRegistryTest(unittest.TestCase):
 
 
 class ToolResultTest(unittest.TestCase):
+    def test_mock_results_are_visibly_simulated(self):
+        result = ToolResult(success=True, summary="Created ticket", details={"mocked": True})
+        self.assertTrue(result.summary.startswith("[SIMULATED]"))
+
     def test_details_defaults_to_an_empty_dict_not_shared_between_instances(self):
         # A mutable default (dataclass field(default_factory=dict)) must
         # not be accidentally shared across instances -- mutating one

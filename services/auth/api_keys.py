@@ -5,6 +5,7 @@ Keys are stored as SHA-256 hashes (never plaintext) in the api_keys
 table — see infra/postgres/002_auth_and_tenancy.sql for the schema and
 the rationale for using a fast hash here instead of bcrypt/argon2.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -13,7 +14,8 @@ import secrets
 import psycopg2
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from config import POSTGRES_DSN
+from services.auth.database import connect_auth
+from services.auth.principal import DEFAULT_SCOPES, Principal, validate_scopes
 
 # resolve_tenant() runs on every authenticated REST request and every
 # WebSocket connection, making it the single most-invoked external call
@@ -59,33 +61,41 @@ def generate_api_key() -> tuple[str, str]:
 
 
 @_retry_on_transient_db_error
-def resolve_tenant(raw_key: str | None) -> str | None:
-    """Looks up the tenant_id owning ``raw_key``.
+def resolve_principal(raw_key: str | None) -> Principal | None:
+    """Resolve an active credential and its current grants after schema migration.
 
     Returns:
-        The tenant_id as a string, or None if the key is missing, unknown,
+        A principal, or None if the key is missing, unknown,
         or has been revoked.
     """
-    if not raw_key:
+    if not raw_key or len(raw_key) > 256:
         return None
 
     key_hash = hash_key(raw_key)
-    conn = psycopg2.connect(POSTGRES_DSN)
+    conn = connect_auth()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT tenant_id FROM api_keys "
+                "SELECT id, tenant_id, scopes FROM api_keys "
                 "WHERE key_hash = %s AND revoked_at IS NULL;",
                 (key_hash,),
             )
             row = cur.fetchone()
-            return str(row[0]) if row else None
+            return Principal(str(row[1]), str(row[0]), frozenset(row[2])) if row else None
     finally:
         conn.close()
 
 
+def resolve_tenant(raw_key: str | None) -> str | None:
+    """Compatibility lookup; new application paths consume the full principal."""
+    principal = resolve_principal(raw_key)
+    return principal.tenant_id if principal else None
+
+
 @_retry_on_transient_db_error
-def create_tenant_with_key(tenant_name: str) -> tuple[str, str]:
+def create_tenant_with_key(
+    tenant_name: str, *, scopes: frozenset[str] | None = None
+) -> tuple[str, str]:
     """Creates (or reuses) a tenant by name and issues it a fresh API key.
 
     Intended for an admin/CLI provisioning flow — deliberately not
@@ -96,7 +106,8 @@ def create_tenant_with_key(tenant_name: str) -> tuple[str, str]:
         A (tenant_id, raw_api_key) pair. The raw key is shown once; only
         its hash is persisted.
     """
-    conn = psycopg2.connect(POSTGRES_DSN)
+    granted = validate_scopes(DEFAULT_SCOPES if scopes is None else scopes)
+    conn = connect_auth()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -112,8 +123,8 @@ def create_tenant_with_key(tenant_name: str) -> tuple[str, str]:
 
             raw_key, key_hash = generate_api_key()
             cur.execute(
-                "INSERT INTO api_keys (tenant_id, key_hash) VALUES (%s, %s);",
-                (tenant_id, key_hash),
+                "INSERT INTO api_keys (tenant_id, key_hash, scopes) VALUES (%s, %s, %s);",
+                (tenant_id, key_hash, sorted(granted)),
             )
         conn.commit()
         return tenant_id, raw_key
@@ -129,7 +140,7 @@ def revoke_api_key(raw_key: str) -> bool:
         True if a matching, not-already-revoked key was found and revoked.
     """
     key_hash = hash_key(raw_key)
-    conn = psycopg2.connect(POSTGRES_DSN)
+    conn = connect_auth()
     try:
         with conn.cursor() as cur:
             cur.execute(

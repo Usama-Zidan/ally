@@ -30,8 +30,12 @@ class IndexingActivityTest(unittest.IsolatedAsyncioTestCase):
                 ("acme", "policy.pdf"),
             ),
         )
-        self.assertEqual(cursor.execute.call_args_list[1].args[1], ("acme", "policy.pdf", 1, 0, "first"))
-        self.assertEqual(cursor.execute.call_args_list[2].args[1], ("acme", "policy.pdf", 3, 1, "second"))
+        self.assertEqual(
+            cursor.execute.call_args_list[1].args[1], ("acme", "policy.pdf", 1, 0, "first")
+        )
+        self.assertEqual(
+            cursor.execute.call_args_list[2].args[1], ("acme", "policy.pdf", 3, 1, "second")
+        )
         connection.commit.assert_called_once_with()
         connection.close.assert_called_once_with()
 
@@ -52,16 +56,15 @@ class IndexingActivityTest(unittest.IsolatedAsyncioTestCase):
             {"page_number": 1, "text": "first"},
             {"page_number": 2, "text": "second"},
         ]
-        with patch(
-            "services.retrieval.qdrant_store.make_chunk_id",
-            side_effect=["id-one", "id-two"],
-        ) as make_id, patch(
-            "services.retrieval.qdrant_store.delete_by_filename"
-        ) as delete, patch(
-            "services.retrieval.qdrant_store.index_chunks"
-        ) as index_chunks, patch(
-            "services.retrieval.bm25_index.rebuild_index_from_postgres"
-        ) as rebuild:
+        with (
+            patch(
+                "services.retrieval.qdrant_store.make_chunk_id",
+                side_effect=["id-one", "id-two"],
+            ) as make_id,
+            patch("services.retrieval.qdrant_store.delete_by_filename") as delete,
+            patch("services.retrieval.qdrant_store.index_chunks") as index_chunks,
+            patch("services.retrieval.bm25_index.rebuild_index_from_postgres") as rebuild,
+        ):
             result = await activities.embed_and_index(chunks, "policy.pdf", "acme")
 
         delete.assert_called_once_with("acme", "policy.pdf")
@@ -87,12 +90,15 @@ class BackfillTest(unittest.TestCase):
             ("acme", "it.pdf", 2, 4, "security review"),
         ]
 
-        with patch(
-            "services.retrieval.backfill_index.psycopg2.connect",
-            return_value=connection,
-        ) as connect, patch(
-            "services.retrieval.backfill_index.make_chunk_id",
-            side_effect=["id-one", "id-two"],
+        with (
+            patch(
+                "services.retrieval.backfill_index.psycopg2.connect",
+                return_value=connection,
+            ) as connect,
+            patch(
+                "services.retrieval.backfill_index.make_chunk_id",
+                side_effect=["id-one", "id-two"],
+            ),
         ):
             chunks = backfill_index.load_chunks_from_postgres()
 
@@ -107,14 +113,15 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual(chunks[1].chunk_index, 4)
 
     def test_backfill_main_updates_dense_and_lexical_indexes_even_when_empty(self):
-        with patch.object(backfill_index, "load_chunks_from_postgres", return_value=[]), patch.object(
-            backfill_index, "index_chunks"
-        ) as index_chunks, patch.object(
-            backfill_index, "rebuild_index_from_postgres"
-        ) as rebuild, patch("builtins.print") as output:
+        with (
+            patch.object(backfill_index, "load_chunks_from_postgres", return_value=[]),
+            patch.object(backfill_index, "index_chunks") as index_chunks,
+            patch.object(backfill_index, "rebuild_index_from_postgres") as rebuild,
+            patch("builtins.print") as output,
+        ):
             backfill_index.main()
 
-        index_chunks.assert_called_once_with([])
+        index_chunks.assert_called_once_with([], store=unittest.mock.ANY)
         rebuild.assert_called_once_with(force=True)
         output.assert_any_call("Indexed 0 chunks into Qdrant and rebuilt the BM25 index.")
 
@@ -123,27 +130,37 @@ class IngestionWorkflowTest(unittest.IsolatedAsyncioTestCase):
     async def test_workflow_indexes_only_after_chunks_are_persisted(self):
         extracted = [{"page_number": 1, "text": "document"}]
         chunks = [{"page_number": 1, "text": "chunk"}]
-        execute_activity = AsyncMock(
-            side_effect=["native", extracted, chunks, True, True]
-        )
+        execute_activity = AsyncMock(side_effect=["native", extracted, chunks, True, True])
 
-        with patch.object(ingestion_workflow.workflow, "execute_activity", execute_activity):
+        with (
+            patch.object(ingestion_workflow.workflow, "execute_activity", execute_activity),
+            patch.object(ingestion_workflow.workflow, "patched", return_value=False),
+        ):
             result = await ingestion_workflow.IngestDocumentWorkflow().run(
                 "/tmp/policy.pdf", "policy.pdf", "acme"
             )
 
         self.assertEqual(
             result,
-            {"filename": "policy.pdf", "tenant_id": "acme", "num_chunks": 1, "stored": True, "indexed": True},
+            {
+                "filename": "policy.pdf",
+                "tenant_id": "acme",
+                "num_chunks": 1,
+                "stored": True,
+                "indexed": True,
+            },
         )
         calls = execute_activity.await_args_list
-        self.assertEqual([item.args[0] for item in calls], [
-            activities.detect_document_type,
-            activities.extract_with_unstructured,
-            activities.chunk_pages,
-            activities.persist_chunks,
-            activities.embed_and_index,
-        ])
+        self.assertEqual(
+            [item.args[0] for item in calls],
+            [
+                activities.detect_document_type,
+                activities.extract_with_unstructured,
+                activities.chunk_pages,
+                activities.persist_chunks,
+                activities.embed_and_index,
+            ],
+        )
         self.assertEqual(calls[3].kwargs["args"], [chunks, "policy.pdf", "acme"])
         self.assertEqual(calls[4].kwargs["args"], [chunks, "policy.pdf", "acme"])
         self.assertEqual(calls[4].kwargs["start_to_close_timeout"], timedelta(minutes=10))
@@ -151,15 +168,34 @@ class IngestionWorkflowTest(unittest.IsolatedAsyncioTestCase):
     async def test_worker_registers_new_indexing_activity(self):
         client = object()
         worker = SimpleNamespace(run=AsyncMock())
-        with patch.object(
-            worker_module.Client, "connect", new=AsyncMock(return_value=client)
-        ), patch.object(worker_module, "Worker", return_value=worker) as worker_factory, patch("builtins.print"):
+        with (
+            patch.object(worker_module.Client, "connect", new=AsyncMock(return_value=client)),
+            patch.object(worker_module, "Worker", return_value=worker) as worker_factory,
+            patch("builtins.print"),
+        ):
             await worker_module.main()
 
         kwargs = worker_factory.call_args.kwargs
         self.assertIs(worker_factory.call_args.args[0], client)
         self.assertEqual(kwargs["task_queue"], "ingestion-task-queue")
+        self.assertIn(activities.register_ingestion, kwargs["activities"])
+        self.assertIn(activities.update_ingestion_stage, kwargs["activities"])
+        self.assertIn(activities.finish_ingestion_attempt, kwargs["activities"])
+        self.assertIn(activities.cleanup_ingestion_artifacts, kwargs["activities"])
+        self.assertIn(activities.janitor_ingestion_artifacts, kwargs["activities"])
+        self.assertIn(activities.activate_ingestion_version, kwargs["activities"])
+        self.assertIn(activities.tombstone_ingestion_document, kwargs["activities"])
+        self.assertIn(activities.reconcile_ingestion_indexes, kwargs["activities"])
         self.assertIn(activities.embed_and_index, kwargs["activities"])
+        self.assertEqual(
+            kwargs["workflows"],
+            [
+                ingestion_workflow.IngestDocumentWorkflow,
+                ingestion_workflow.IngestionArtifactJanitorWorkflow,
+                ingestion_workflow.ReconcileIngestionWorkflow,
+                ingestion_workflow.TombstoneIngestionWorkflow,
+            ],
+        )
         worker.run.assert_awaited_once_with()
 
 

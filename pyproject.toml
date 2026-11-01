@@ -1,0 +1,19 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone operator script deliberately adds the repository before imports.
+"services/retrieval/backfill_index.py" = ["E402"]
+"eval/run_ragas_eval.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["config.py", "services/runtime", "local_agent/action_policy.py", "local_agent/device_credentials.py", "local_agent/pair.py", "local_agent/shell_runner.py", "local_agent/execution_audit.py", "local_agent/local_approval.py", "scripts/check_secrets.py", "services/agent/policy.py", "services/agent/pc_agent_bridge.py", "services/agent/tools/contracts.py", "services/auth", "services/api/websocket", "services/api/routes", "services/chat/history.py", "services/chat/mongo_history.py", "services/chat/ports.py", "services/chat/settings.py"]
+follow_imports = "silent"
+check_untyped_defs = true
+disallow_untyped_defs = true

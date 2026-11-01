@@ -19,14 +19,13 @@ To run it:
     cd infra && docker compose up -d postgres qdrant
     RUN_INTEGRATION_TESTS=1 python -m unittest tests.test_integration_retrieval
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
 import unittest
 import uuid
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 RUN_INTEGRATION = os.getenv("RUN_INTEGRATION_TESTS") == "1"
 
@@ -44,9 +43,11 @@ def _services_available() -> tuple[bool, str]:
         return False, f"PostgreSQL unavailable: {exc}"
 
     try:
-        from services.retrieval.qdrant_store import get_client
+        from services.retrieval.qdrant_store import QdrantStore
 
-        get_client().get_collections()
+        with QdrantStore() as store:
+            with store.connection() as client:
+                client.get_collections()
     except Exception as exc:  # noqa: BLE001
         return False, f"Qdrant unavailable: {exc}"
 
@@ -244,11 +245,7 @@ class EndToEndRetrievalTest(unittest.TestCase):
             candidate_pool_size=10,
         )
 
-        stale = [
-            r
-            for r in results
-            if r["filename"] == self.filename and r["page_number"] == 2
-        ]
+        stale = [r for r in results if r["filename"] == self.filename and r["page_number"] == 2]
         self.assertEqual(
             stale,
             [],

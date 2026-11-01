@@ -1,9 +1,9 @@
 {
   "server_url": "wss://your-ally-backend.example.com/ws/pc-agent",
-  "api_key": "ally_replace-with-a-key-from-provision_tenant",
+  "device_credentials_file": "device-credentials.dpapi",
   "capabilities": {
-    "open_apps": true,
-    "file_rw": true,
+    "open_apps": false,
+    "file_rw": false,
     "shell_exec": false,
     "mouse_keyboard_control": false
   },
@@ -11,7 +11,7 @@
     "C:\\Users\\you\\Documents\\ally-sandbox"
   ],
   "app_aliases": {
-    "vscode": "C:\\Users\\osamazidan\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+    "vscode": "C:\\Users\\you\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
     "my music": "https://music.youtube.com"
   }
 }

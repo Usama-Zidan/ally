@@ -1,0 +1,17 @@
+# Disposable MongoDB history tests only; never mounts application data.
+services:
+  mongo:
+    image: mongo:7.0
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25", "--setParameter", "enableTestCommands=1"]
+    ports:
+      - "127.0.0.1:57017:27017"
+    tmpfs:
+      - /data/db
+      - /data/configdb
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

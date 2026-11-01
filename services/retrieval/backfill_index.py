@@ -3,6 +3,7 @@ Backfill Phase 1 Postgres chunks into the Phase 2 dense and lexical indexes.
 
 Run this once for existing data or after an interrupted ingestion migration.
 """
+
 from __future__ import annotations
 
 import sys
@@ -17,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config import POSTGRES_DSN
 from services.retrieval.bm25_index import rebuild_index_from_postgres
-from services.retrieval.qdrant_store import Chunk, index_chunks, make_chunk_id
+from services.retrieval.qdrant_store import Chunk, QdrantStore, index_chunks, make_chunk_id
 
 log = structlog.get_logger()
 
@@ -58,7 +59,8 @@ def main() -> None:
     """Backfill Qdrant and rebuild BM25 from the current PostgreSQL chunks."""
     chunks = load_chunks_from_postgres()
     log.info("chunks_loaded_from_postgres", count=len(chunks))
-    index_chunks(chunks)
+    with QdrantStore() as store:
+        index_chunks(chunks, store=store)
     # force=True: this is an explicit operator-initiated backfill, so it
     # must actually rebuild rather than be skipped by the debounce window
     # that throttles the per-document rebuilds in embed_and_index.
