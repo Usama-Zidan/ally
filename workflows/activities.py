@@ -115,7 +115,11 @@ async def _run_sync_with_heartbeat(
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=heartbeat_interval)
             except TimeoutError:
-                activity.heartbeat()
+                try:
+                    activity.heartbeat()
+                except RuntimeError:
+                    # Not inside a Temporal activity (e.g. called directly from tests/scripts).
+                    pass
         return await task
     except asyncio.CancelledError:
         if on_cancel is not None:

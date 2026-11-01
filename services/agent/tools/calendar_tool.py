@@ -2,6 +2,7 @@
 Google Calendar integration. Mocked for now -- see jira_tool.py's module
 docstring for the general pattern.
 """
+
 from __future__ import annotations
 
 import uuid

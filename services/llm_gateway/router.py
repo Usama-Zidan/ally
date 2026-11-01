@@ -250,29 +250,6 @@ async def complete_chat(
     return "".join(parts)
 
 
-async def complete_chat(
-    messages: list[dict], temperature: float | None = 0.0, max_tokens: int | None = 256
-) -> str:
-    """Non-streaming completion: accumulates stream_chat_completion into
-    a single string. Used by the intent classifier (services.agent.classifier),
-    which needs one parseable response rather than token-by-token output
-    -- reuses the exact same retry/fallback/breaker path as the chat
-    streaming endpoint rather than a second, separate call path.
-
-    Defaults to temperature=0.0 (unlike stream_chat_completion's 0.7),
-    since classification wants the same JSON shape every time, not
-    varied phrasing -- callers that want different behavior can still
-    override both params.
-    """
-    parts = [
-        delta
-        async for delta in stream_chat_completion(
-            messages, temperature=temperature, max_tokens=max_tokens
-        )
-    ]
-    return "".join(parts)
-
-
 def reset_gateway_state() -> None:
     """Clears the cached Router and breaker so a config change (or a test)
     takes effect on the next call instead of reusing a stale instance."""

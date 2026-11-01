@@ -6,6 +6,7 @@ it) -- only the classifier and tool registry are patched, so the actual
 routing/dispatch wiring (add_conditional_edges, the tool_node error
 handling) is genuinely under test.
 """
+
 from __future__ import annotations
 
 import unittest

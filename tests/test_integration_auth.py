@@ -46,7 +46,7 @@ class AuthPostgresIntegrationTest(unittest.TestCase):
             conn.execute(text(f'CREATE SCHEMA "{self.schema}"'))
         self.engine = create_engine(
             DSN,
-            connect_args={"connect_timeout": 3, "options": f"-csearch_path={self.schema},public"},
+            connect_args={"connect_timeout": 3, "options": f"-csearch_path={self.schema}"},
         )
 
     def tearDown(self):
@@ -62,6 +62,13 @@ class AuthPostgresIntegrationTest(unittest.TestCase):
         with self.engine.connect() as conn:
             config.attributes["connection"] = conn
             (command.downgrade if downgrade else command.upgrade)(config, revision)
+
+    def reset_schema(self):
+        conn = psycopg2.connect(DSN)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        conn.close()
 
     def connect(self):
         return REAL_PSYCOPG_CONNECT(
@@ -925,6 +932,7 @@ class AuthPostgresIntegrationTest(unittest.TestCase):
             ):
                 conn.execute(text((ROOT / "infra/postgres" / name).read_text()))
         principal = self.insert_key()
+
         self.migrate()
         with self.engine.connect() as conn:
             self.assertEqual(

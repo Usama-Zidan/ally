@@ -22,6 +22,7 @@ guessed at; the hand-rolled JSON parsing below has an explicit fallback
 for exactly the failure mode Instructor would otherwise guard against
 (malformed/unparseable model output).
 """
+
 from __future__ import annotations
 
 import json
