@@ -45,6 +45,13 @@ def patch_rag_route():
     return patch.object(main, "route_message", new=AsyncMock(return_value={"route": "rag"}))
 
 
+def patch_rag_route():
+    """Keep chat endpoint tests focused on retrieval/streaming, not classification."""
+    return patch.object(
+        main, "route_message", new=AsyncMock(return_value={"route": "rag"})
+    )
+
+
 class TemporalProbe:
     def __init__(self, error: Exception | None = None):
         self.error = error

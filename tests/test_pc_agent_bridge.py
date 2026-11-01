@@ -1,5 +1,4 @@
 """Tests for services.agent.pc_agent_bridge."""
-
 from __future__ import annotations
 
 import asyncio

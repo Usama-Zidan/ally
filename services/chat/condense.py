@@ -43,6 +43,19 @@ _NO_THINK_SUFFIX = "\n\n/no_think"
 # fully honor /no_think.
 _CONDENSE_MAX_TOKENS = 256
 
+# Same /no_think rationale as services.agent.classifier: Qwen3 (this
+# project's default self-hosted model) opens every assistant turn with a
+# <think>...</think> block unless this literal string appears in the user
+# turn, and on a small model that reasoning phase can consume the entire
+# max_tokens budget before any visible output is emitted -- which is
+# exactly the empty-`raw` case query_condensation_degenerate below exists
+# to catch. Suppressing it up front avoids hitting that path on every turn.
+_NO_THINK_SUFFIX = "\n\n/no_think"
+# Raised from 128: too tight even for a short rewritten question once any
+# residual reasoning-token overhead is added on a backend that doesn't
+# fully honor /no_think.
+_CONDENSE_MAX_TOKENS = 256
+
 _CITATION_RE = re.compile(r"\s*\[\d+\]")
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)

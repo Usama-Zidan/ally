@@ -10,7 +10,6 @@ Adding a new tool:
 That's it -- the classifier learns about it from `describe()`, and
 services.agent.graph dispatches to it by name automatically.
 """
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

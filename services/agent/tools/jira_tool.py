@@ -12,7 +12,6 @@ replacing the body of each `if action == ...` branch with an actual
 `account.access_token` -- the call sites in services.agent.graph and the
 classifier prompt do not need to change.
 """
-
 from __future__ import annotations
 
 import uuid
